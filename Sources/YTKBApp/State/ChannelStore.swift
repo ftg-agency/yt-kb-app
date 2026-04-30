@@ -90,4 +90,29 @@ final class ChannelStore: ObservableObject {
             save()
         }
     }
+
+    // MARK: - Retry queue
+
+    func addRetryEntry(_ entry: RetryQueueEntry) {
+        if !retryQueue.contains(where: { $0.videoId == entry.videoId }) {
+            retryQueue.append(entry)
+            save()
+        }
+    }
+
+    func updateRetryEntry(_ entry: RetryQueueEntry) {
+        if let idx = retryQueue.firstIndex(where: { $0.videoId == entry.videoId }) {
+            retryQueue[idx] = entry
+            save()
+        }
+    }
+
+    func removeRetryEntry(videoId: String) {
+        retryQueue.removeAll { $0.videoId == videoId }
+        save()
+    }
+
+    func retryEntriesFor(channelURL: String) -> [RetryQueueEntry] {
+        retryQueue.filter { $0.channelURL == channelURL }
+    }
 }

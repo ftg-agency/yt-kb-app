@@ -4,6 +4,7 @@ struct ChannelRowView: View {
     let channel: TrackedChannel
     let isPollingThis: Bool
     let onPollOnly: () -> Void
+    let onToggleEnabled: () -> Void
     let onRemove: () -> Void
     let onOpenFolder: () -> Void
 
@@ -11,9 +12,17 @@ struct ChannelRowView: View {
         HStack(spacing: 8) {
             statusIcon
             VStack(alignment: .leading, spacing: 1) {
-                Text(channel.name)
-                    .font(.callout)
-                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    Text(channel.name)
+                        .font(.callout)
+                        .lineLimit(1)
+                        .foregroundStyle(channel.enabled ? .primary : .secondary)
+                    if !channel.enabled {
+                        Text("(отключён)")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
                 Text(subtitle)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -24,11 +33,13 @@ struct ChannelRowView: View {
         .contentShape(Rectangle())
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
+        .opacity(channel.enabled ? 1.0 : 0.6)
         .contextMenu {
             Button("Открыть папку в Finder", action: onOpenFolder)
             Button("Проверить только этот канал", action: onPollOnly)
-                .disabled(isPollingThis)
+                .disabled(isPollingThis || !channel.enabled)
             Divider()
+            Button(channel.enabled ? "Отключить" : "Включить", action: onToggleEnabled)
             Button("Удалить", role: .destructive, action: onRemove)
         }
     }
@@ -37,6 +48,9 @@ struct ChannelRowView: View {
     private var statusIcon: some View {
         if isPollingThis {
             ProgressView().controlSize(.small)
+        } else if !channel.enabled {
+            Image(systemName: "pause.circle")
+                .foregroundStyle(.secondary)
         } else if channel.lastPollStatus == "error" {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
@@ -51,6 +65,7 @@ struct ChannelRowView: View {
 
     private var subtitle: String {
         if isPollingThis { return "проверяется…" }
+        if !channel.enabled { return "не опрашивается" }
         if let err = channel.lastPollError, channel.lastPollStatus == "error" {
             return "ошибка: \(err)"
         }

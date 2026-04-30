@@ -6,6 +6,8 @@ struct OnboardingView: View {
     var onFinish: () -> Void
 
     @State private var step: Int = 0
+    @State private var discovered: [DiscoveredChannel] = []
+    @State private var hasCheckedDiscovery = false
 
     var body: some View {
         VStack(spacing: 16) {
@@ -27,9 +29,15 @@ struct OnboardingView: View {
                 }
                 Spacer()
                 Button(step < 2 ? "Дальше" : "Готово") {
+                    if step == 0 {
+                        runDiscovery()
+                    }
                     if step < 2 {
                         step += 1
                     } else {
+                        if !discovered.isEmpty {
+                            appState.adoptDiscovered(discovered)
+                        }
                         appState.settings.markOnboardingComplete()
                         appState.needsOnboarding = false
                         onFinish()
@@ -40,7 +48,7 @@ struct OnboardingView: View {
             }
         }
         .padding(20)
-        .frame(width: 520, height: 380)
+        .frame(width: 540, height: 420)
     }
 
     private var kbStep: some View {
@@ -99,16 +107,45 @@ struct OnboardingView: View {
     private var doneStep: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Готово!").font(.headline)
-            Text("Иконка yt-kb появилась в menu bar — кликните по ней чтобы добавить первый канал.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-            HStack {
-                Image(systemName: "text.book.closed.fill")
-                Text("← такая иконка").foregroundStyle(.secondary)
+            if !discovered.isEmpty {
+                Text("В выбранной папке найдено \(discovered.count) канал(ов):")
+                    .font(.callout)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(discovered, id: \.url) { ch in
+                            HStack {
+                                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                                Text(ch.name).font(.callout)
+                                Spacer()
+                                Text("\(ch.videoCount) видео")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+                .frame(maxHeight: 160)
+                Text("Они будут добавлены на отслеживание.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Иконка yt-kb появилась в menu bar — кликните по ней чтобы добавить первый канал.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Image(systemName: "text.book.closed.fill")
+                    Text("← такая иконка").foregroundStyle(.secondary)
+                }
+                .padding(.top, 8)
             }
-            .padding(.top, 8)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func runDiscovery() {
+        guard !hasCheckedDiscovery else { return }
+        hasCheckedDiscovery = true
+        discovered = appState.discoverNewChannels()
     }
 
     private func pickKB() {
@@ -122,6 +159,7 @@ struct OnboardingView: View {
         if panel.runModal() == .OK, let url = panel.url {
             do {
                 try appState.settings.setKBDirectory(url)
+                hasCheckedDiscovery = false
             } catch {
                 Logger.shared.error("Onboarding: setKBDirectory failed: \(error)")
             }
@@ -133,6 +171,7 @@ struct OnboardingView: View {
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         do {
             try appState.settings.setKBDirectory(url)
+            hasCheckedDiscovery = false
         } catch {
             Logger.shared.error("Onboarding: useDefault failed: \(error)")
         }

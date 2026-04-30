@@ -101,16 +101,16 @@ enum VTTParser {
     }
 }
 
-/// Dispatch by extension. Phase 1: only VTT. SRV3/JSON3 stubs reject for now.
+/// Dispatch by extension to the right parser.
 enum SubsDispatcher {
     static func parse(_ file: DownloadedSubFile) -> [Segment] {
         switch file.ext {
         case "vtt":
             return (try? VTTParser.parse(at: file.url)) ?? []
-        case "srv3", "json3":
-            // Phase 2 — we accept the format from yt-dlp but can't parse yet.
-            Logger.shared.warn("SRV3/JSON3 parsing not yet implemented (file: \(file.url.lastPathComponent))")
-            return []
+        case "srv3":
+            return SRV3Parser.parse(at: file.url)
+        case "json3":
+            return JSON3Parser.parse(at: file.url)
         default:
             return []
         }

@@ -71,6 +71,15 @@ struct PopoverView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
+                if !appState.channelStore.retryQueue.isEmpty {
+                    Text("retry: \(appState.channelStore.retryQueue.count)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.secondary.opacity(0.15))
+                        .cornerRadius(4)
+                }
             }
             .padding(.horizontal, 12)
             .padding(.top, 8)
@@ -90,13 +99,18 @@ struct PopoverView: View {
                                 channel: channel,
                                 isPollingThis: appState.pollingChannelURL == channel.url,
                                 onPollOnly: { Task { await PollingCoordinator.shared.pollOne(channel: channel, appState: appState) } },
+                                onToggleEnabled: {
+                                    var updated = channel
+                                    updated.enabled.toggle()
+                                    appState.channelStore.updateChannel(updated)
+                                },
                                 onRemove: { appState.channelStore.removeChannel(url: channel.url) },
                                 onOpenFolder: { openChannelFolder(channel: channel) }
                             )
                         }
                     }
                 }
-                .frame(maxHeight: 200)
+                .frame(maxHeight: 220)
             }
 
             if let err = pollErrorMessage {

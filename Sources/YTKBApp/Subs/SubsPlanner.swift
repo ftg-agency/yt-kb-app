@@ -22,8 +22,14 @@ enum SubsPlanner {
         return nil
     }
 
-    /// Build a 6-tier priority plan, deduped by (lang, isAuto).
-    static func buildPlan(meta: VideoMetadata) -> SubsPlan {
+    /// Build a deduplicated, ordered priority plan based on user-configured `languagePriority`.
+    /// Special tokens (top-down):
+    ///   "@original" — video's original audio language
+    ///   "@english"  — English fallback
+    ///   "@any"      — first alphabetical key in (auto), then (manual)
+    /// Other strings are treated as raw BCP-47 language codes (e.g. "ru", "fr-FR").
+    /// For each requested language, both auto-subs and manual-subs are tried (auto first).
+    static func buildPlan(meta: VideoMetadata, languagePriority: [String] = ["@original", "@english", "@any"]) -> SubsPlan {
         let auto = meta.automaticCaptions ?? [:]
         let manual = meta.subtitles ?? [:]
         let orig = meta.language ?? meta.originalLanguage
@@ -39,15 +45,22 @@ enum SubsPlanner {
             attempts.append(SubsPlan.Attempt(langKey: key, isAuto: isAuto))
         }
 
-        // Tier 1+2: original language
-        add(pickLang(orig, in: auto), true)
-        add(pickLang(orig, in: manual), false)
-        // Tier 3+4: English
-        add(pickLang("en", in: auto), true)
-        add(pickLang("en", in: manual), false)
-        // Tier 5+6: anything else (alphabetical)
-        if let firstAuto = auto.keys.sorted().first { add(firstAuto, true) }
-        if let firstManual = manual.keys.sorted().first { add(firstManual, false) }
+        for token in languagePriority {
+            switch token {
+            case "@original":
+                add(pickLang(orig, in: auto), true)
+                add(pickLang(orig, in: manual), false)
+            case "@english":
+                add(pickLang("en", in: auto), true)
+                add(pickLang("en", in: manual), false)
+            case "@any":
+                if let firstAuto = auto.keys.sorted().first { add(firstAuto, true) }
+                if let firstManual = manual.keys.sorted().first { add(firstManual, false) }
+            default:
+                add(pickLang(token, in: auto), true)
+                add(pickLang(token, in: manual), false)
+            }
+        }
 
         return SubsPlan(attempts: attempts)
     }

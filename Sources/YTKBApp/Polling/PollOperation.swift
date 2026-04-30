@@ -7,71 +7,134 @@ enum PollOutcome: Equatable {
     case error(message: String)
 }
 
+/// Result of polling one channel: counters + first error + retry-queue mutations.
+struct PollChannelReport {
+    var counts: [String: Int] = ["ok": 0, "skipped": 0, "no_subs": 0, "error": 0]
+    var firstError: String?
+    var botCheckHit: Bool = false
+    /// New entries to add to retry_queue (no_subs videos seen for the first time).
+    var newRetries: [RetryQueueEntry] = []
+    /// Entries to update (after a retry attempt: success → remove via `resolvedRetries`, no_subs → bump attempts).
+    var updatedRetries: [RetryQueueEntry] = []
+    /// Retry entries whose video was successfully transcribed; remove from queue.
+    var resolvedRetries: [String] = []  // video_ids
+}
+
 actor PollOperation {
     private let runner: YTDLPRunner
     private let metadata: MetadataFetcher
     private let subs: SubsDownloader
     private let resolver: ChannelResolver
+    private let languagePriority: [String]
 
     init(runner: YTDLPRunner, settings: Settings) {
         self.runner = runner
         self.metadata = MetadataFetcher(runner: runner, settings: settings)
         self.subs = SubsDownloader(runner: runner, settings: settings)
         self.resolver = ChannelResolver(runner: runner, settings: settings)
+        self.languagePriority = settings.languagePriority
     }
 
     /// Process one channel: list videos → diff vs existing → for each new, fetch+subs+write.
-    /// Calls `progress` with a human label as it advances.
+    /// Also attempts re-download for `priorRetries` whose backoff has expired.
     func pollChannel(
         channel: TrackedChannel,
         kbRoot: URL,
+        priorRetries: [RetryQueueEntry],
         progress: @Sendable (String) -> Void
-    ) async -> (counts: [String: Int], firstError: String?) {
-        var counts: [String: Int] = ["ok": 0, "skipped": 0, "no_subs": 0, "error": 0]
-        var firstError: String?
+    ) async -> PollChannelReport {
+        var report = PollChannelReport()
 
         progress("Резолвлю канал…")
         let videos: [VideoRef]
         do {
             videos = try await resolver.listVideos(channelURL: channel.url)
         } catch {
-            return (counts, "не удалось получить список видео: \(error)")
+            report.firstError = "не удалось получить список видео: \(error)"
+            report.botCheckHit = isBotCheck(report.firstError ?? "")
+            return report
         }
 
-        // Pre-scan KB once
         progress("Сканирую базу…")
         let existing = KBScanner.scanExistingIds(in: kbRoot)
-        let toProcess = videos.filter { existing[$0.videoId] == nil }
-        Logger.shared.info("[\(channel.name)] found \(videos.count) videos, \(toProcess.count) new")
+        let retryIds = Set(priorRetries.map(\.videoId))
+        let toProcess = videos.filter { existing[$0.videoId] == nil && !retryIds.contains($0.videoId) }
+        Logger.shared.info("[\(channel.name)] found=\(videos.count) new=\(toProcess.count) retries=\(priorRetries.count)")
 
-        if toProcess.isEmpty {
-            progress("всё уже в базе")
-            return (counts, nil)
-        }
-
+        // First, process new videos
         for (idx, ref) in toProcess.enumerated() {
             let label = ref.title.map { String($0.prefix(40)) } ?? ref.videoId
             progress("[\(idx + 1)/\(toProcess.count)] \(label)")
             let outcome = await processVideo(ref: ref, kbRoot: kbRoot)
-            switch outcome {
-            case .ok(let detail):
-                counts["ok", default: 0] += 1
-                Logger.shared.info("ok · \(label) · \(detail)")
-            case .skipped:
-                counts["skipped", default: 0] += 1
-            case .noSubs(let detail):
-                counts["no_subs", default: 0] += 1
-                Logger.shared.info("no_subs · \(label) · \(detail)")
-            case .error(let msg):
-                counts["error", default: 0] += 1
-                Logger.shared.error("error · \(label) · \(msg)")
-                if firstError == nil { firstError = msg }
-                if isBotCheck(msg) {
-                    return (counts, "YouTube включил bot-detection. Проверьте, что вы залогинены в YouTube в выбранном браузере.")
+            applyOutcome(outcome, ref: ref, channelURL: channel.url, channelName: channel.name, isRetry: false, report: &report)
+            if report.botCheckHit { return report }
+        }
+
+        // Then, process eligible retry-queue entries
+        let eligible = RetryProcessor.eligibleEntries(priorRetries)
+        if !eligible.isEmpty {
+            Logger.shared.info("[\(channel.name)] processing \(eligible.count) retry entries")
+        }
+        for (idx, entry) in eligible.enumerated() {
+            let ref = VideoRef(videoId: entry.videoId, title: entry.videoTitle)
+            let label = entry.videoTitle.map { String($0.prefix(40)) } ?? entry.videoId
+            progress("[retry \(idx + 1)/\(eligible.count)] \(label)")
+            let outcome = await processVideo(ref: ref, kbRoot: kbRoot)
+            applyOutcome(outcome, ref: ref, channelURL: channel.url, channelName: channel.name, isRetry: true, report: &report, priorEntry: entry)
+            if report.botCheckHit { return report }
+        }
+
+        return report
+    }
+
+    private func applyOutcome(
+        _ outcome: PollOutcome,
+        ref: VideoRef,
+        channelURL: String,
+        channelName: String,
+        isRetry: Bool,
+        report: inout PollChannelReport,
+        priorEntry: RetryQueueEntry? = nil
+    ) {
+        let label = ref.title.map { String($0.prefix(40)) } ?? ref.videoId
+        switch outcome {
+        case .ok(let detail):
+            report.counts["ok", default: 0] += 1
+            Logger.shared.info("ok · \(label) · \(detail)")
+            if isRetry { report.resolvedRetries.append(ref.videoId) }
+        case .skipped:
+            report.counts["skipped", default: 0] += 1
+        case .noSubs(let detail):
+            report.counts["no_subs", default: 0] += 1
+            Logger.shared.info("no_subs · \(label) · \(detail)")
+            if isRetry, let prior = priorEntry {
+                var updated = prior
+                updated.attempts += 1
+                updated.lastAttempt = Date()
+                if RetryProcessor.shouldMarkPermanent(updated) {
+                    updated.status = "permanent_no_subs"
                 }
+                report.updatedRetries.append(updated)
+            } else {
+                let entry = RetryQueueEntry(
+                    channelURL: channelURL,
+                    videoId: ref.videoId,
+                    videoTitle: ref.title,
+                    firstSeen: Date(),
+                    lastAttempt: Date(),
+                    attempts: 1,
+                    status: "no_subs"
+                )
+                report.newRetries.append(entry)
+            }
+        case .error(let msg):
+            report.counts["error", default: 0] += 1
+            Logger.shared.error("error · \(label) · \(msg)")
+            if report.firstError == nil { report.firstError = msg }
+            if isBotCheck(msg) {
+                report.botCheckHit = true
             }
         }
-        return (counts, firstError)
     }
 
     private func processVideo(ref: VideoRef, kbRoot: URL) async -> PollOutcome {
@@ -90,8 +153,7 @@ actor PollOperation {
             return .skipped
         }
 
-        // Try subs by plan
-        let plan = SubsPlanner.buildPlan(meta: meta)
+        let plan = SubsPlanner.buildPlan(meta: meta, languagePriority: languagePriority)
         if plan.attempts.isEmpty {
             return .noSubs(detail: "нет ни авто, ни ручных сабов в метаданных")
         }
@@ -101,7 +163,6 @@ actor PollOperation {
 
         for attempt in plan.attempts {
             let kindLabel = attempt.isAuto ? "auto" : "manual"
-            // Per-attempt tmp dir
             let tmpDir = FileManager.default.temporaryDirectory
                 .appendingPathComponent("ytkb-\(UUID().uuidString)", isDirectory: true)
             try? FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
@@ -116,7 +177,11 @@ actor PollOperation {
                     into: tmpDir
                 )
             } catch {
-                failures.append("\(kindLabel)-subs:\(attempt.langKey) — \(error)")
+                let msg = "\(kindLabel)-subs:\(attempt.langKey) — \(error)"
+                failures.append(msg)
+                if isBotCheck("\(error)") {
+                    return .error(message: "\(error)")
+                }
                 continue
             }
 
@@ -134,7 +199,6 @@ actor PollOperation {
                 isFallback: isFallback
             )
 
-            // Write .md
             do {
                 try FileManager.default.createDirectory(at: channelDir, withIntermediateDirectories: true)
                 let body = MarkdownRenderer.render(meta: meta, transcript: transcript)

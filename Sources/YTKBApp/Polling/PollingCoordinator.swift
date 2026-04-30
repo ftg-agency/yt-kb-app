@@ -1,16 +1,21 @@
 import Foundation
 
-/// Owns the singleton actor that prevents overlapping polls.
+enum PollTrigger {
+    case manual
+    case manualSingle
+    case scheduled
+}
+
+/// Owns the singleton actor that prevents overlapping polls and aggregates results.
 actor PollingCoordinator {
     static let shared = PollingCoordinator()
 
     private var isPolling = false
-
     private init() {}
 
     /// Poll all enabled channels sequentially. Idempotent: a second concurrent call
     /// returns immediately if a poll is already running.
-    func pollAll(appState: AppState) async {
+    func pollAll(appState: AppState, trigger: PollTrigger = .manual) async {
         if isPolling {
             Logger.shared.info("pollAll: skipped (already polling)")
             return
@@ -37,14 +42,35 @@ actor PollingCoordinator {
             }
         }
 
-        // Hold security-scoped access for the duration
         let started = kbRoot.startAccessingSecurityScopedResource()
         defer { if started { kbRoot.stopAccessingSecurityScopedResource() } }
 
         let op = PollOperation(runner: YTDLPRunner.shared, settings: settings)
+        var totalDownloaded = 0
+        var botHit = false
+
         for ch in channels where ch.enabled {
-            await pollOneInternal(channel: ch, op: op, kbRoot: kbRoot, appState: appState)
+            let priorRetries = await MainActor.run { appState.channelStore.retryEntriesFor(channelURL: ch.url) }
+            let report = await pollOneInternal(
+                channel: ch,
+                op: op,
+                kbRoot: kbRoot,
+                appState: appState,
+                priorRetries: priorRetries
+            )
+            totalDownloaded += report.counts["ok"] ?? 0
+            if report.botCheckHit {
+                botHit = true
+                break
+            }
         }
+
+        await postSummaryNotification(
+            appState: appState,
+            trigger: trigger,
+            totalDownloaded: totalDownloaded,
+            botHit: botHit
+        )
     }
 
     func pollOne(channel: TrackedChannel, appState: AppState) async {
@@ -78,44 +104,91 @@ actor PollingCoordinator {
         defer { if started { kbRoot.stopAccessingSecurityScopedResource() } }
 
         let op = PollOperation(runner: YTDLPRunner.shared, settings: settings)
-        await pollOneInternal(channel: channel, op: op, kbRoot: kbRoot, appState: appState)
+        let priorRetries = await MainActor.run { appState.channelStore.retryEntriesFor(channelURL: channel.url) }
+        let report = await pollOneInternal(
+            channel: channel,
+            op: op,
+            kbRoot: kbRoot,
+            appState: appState,
+            priorRetries: priorRetries
+        )
+        await postSummaryNotification(
+            appState: appState,
+            trigger: .manualSingle,
+            totalDownloaded: report.counts["ok"] ?? 0,
+            botHit: report.botCheckHit
+        )
     }
 
     private func pollOneInternal(
         channel: TrackedChannel,
         op: PollOperation,
         kbRoot: URL,
-        appState: AppState
-    ) async {
+        appState: AppState,
+        priorRetries: [RetryQueueEntry]
+    ) async -> PollChannelReport {
         await MainActor.run {
             appState.pollingChannelURL = channel.url
         }
         Logger.shared.info("Polling \(channel.name) (\(channel.url))")
-        let (counts, firstError) = await op.pollChannel(
+        let report = await op.pollChannel(
             channel: channel,
             kbRoot: kbRoot,
-            progress: { _ in /* future: per-step UI updates */ }
+            priorRetries: priorRetries,
+            progress: { _ in }
         )
+
+        // Apply retry-queue mutations
+        let resolved = report.resolvedRetries
+        let newEntries = report.newRetries
+        let updatedEntries = report.updatedRetries
 
         var built = channel
         built.lastPolledAt = Date()
-        if let err = firstError, (counts["ok"] ?? 0) == 0 {
+        let okCount = report.counts["ok"] ?? 0
+        if let err = report.firstError, okCount == 0 {
             built.lastPollStatus = "error"
             built.lastPollError = String(err.prefix(200))
         } else {
             built.lastPollStatus = "ok"
             built.lastPollError = nil
         }
-        let updated = built
-        let summary = counts.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: " ")
+        let updatedChannel = built
+        let summary = report.counts.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: " ")
         Logger.shared.info("Poll done: \(channel.name) · \(summary)")
-        let okCount = counts["ok"] ?? 0
-        let errSnapshot = firstError
+
+        let errSnapshot = report.firstError
         await MainActor.run {
-            appState.channelStore.updateChannel(updated)
+            appState.channelStore.updateChannel(updatedChannel)
+            for vid in resolved { appState.channelStore.removeRetryEntry(videoId: vid) }
+            for entry in newEntries { appState.channelStore.addRetryEntry(entry) }
+            for entry in updatedEntries { appState.channelStore.updateRetryEntry(entry) }
             if okCount == 0, let err = errSnapshot {
                 appState.lastError = err
             }
+            // Trigger error notification once per channel
+            if okCount == 0, let err = errSnapshot, !report.botCheckHit {
+                Task { await NotificationsService.shared.postChannelError(channelName: channel.name, message: String(err.prefix(120))) }
+            }
+        }
+        return report
+    }
+
+    private func postSummaryNotification(
+        appState: AppState,
+        trigger: PollTrigger,
+        totalDownloaded: Int,
+        botHit: Bool
+    ) async {
+        let notificationsEnabled = await MainActor.run { appState.settings.notificationsEnabled }
+        guard notificationsEnabled else { return }
+        // Suppress non-critical notifications on manual triggers to avoid duplicating UI feedback
+        if botHit {
+            await NotificationsService.shared.postBotCheck()
+            return
+        }
+        if trigger == .scheduled, totalDownloaded > 0 {
+            await NotificationsService.shared.postSuccess(downloaded: totalDownloaded)
         }
     }
 }

@@ -20,18 +20,50 @@ final class Settings: ObservableObject {
         var ytDlpKey: String? { self == .none ? nil : rawValue }
     }
 
+    enum PollInterval: Int, CaseIterable, Identifiable {
+        case hourly = 3600
+        case every3h = 10800
+        case every6h = 21600
+        case daily = 86400
+        var id: Int { rawValue }
+        var displayName: String {
+            switch self {
+            case .hourly: return "Каждый час"
+            case .every3h: return "Каждые 3 часа"
+            case .every6h: return "Каждые 6 часов"
+            case .daily: return "Раз в день"
+            }
+        }
+        var seconds: TimeInterval { TimeInterval(rawValue) }
+    }
+
     private let defaults = UserDefaults.standard
     private struct Keys {
         static let kbBookmark = "kbBookmark"
         static let browser = "browser"
         static let sleepRequests = "sleepRequests"
         static let onboardingCompleted = "onboardingCompleted"
+        static let pollInterval = "pollInterval"
+        static let backgroundPollingEnabled = "backgroundPollingEnabled"
+        static let notificationsEnabled = "notificationsEnabled"
+        static let quietHoursEnabled = "quietHoursEnabled"
+        static let quietHoursStart = "quietHoursStart"  // 0..23
+        static let quietHoursEnd = "quietHoursEnd"
+        static let languagePriority = "languagePriority"  // [String], top-down
     }
 
     @Published var kbDirectory: URL?
     @Published var browser: BrowserChoice = .chrome
     @Published var sleepRequests: Double = 1.0
     @Published var onboardingCompleted: Bool = false
+    @Published var pollInterval: PollInterval = .every3h
+    @Published var backgroundPollingEnabled: Bool = true
+    @Published var notificationsEnabled: Bool = true
+    @Published var quietHoursEnabled: Bool = false
+    @Published var quietHoursStart: Int = 0
+    @Published var quietHoursEnd: Int = 7
+    /// Top-down preferred language order. Special tokens: "@original", "@english", "@any".
+    @Published var languagePriority: [String] = ["@original", "@english", "@any"]
 
     func load() {
         if let raw = defaults.string(forKey: Keys.browser),
@@ -40,7 +72,60 @@ final class Settings: ObservableObject {
         }
         sleepRequests = defaults.object(forKey: Keys.sleepRequests) as? Double ?? 1.0
         onboardingCompleted = defaults.bool(forKey: Keys.onboardingCompleted)
+        if let raw = defaults.object(forKey: Keys.pollInterval) as? Int,
+           let pi = PollInterval(rawValue: raw) {
+            pollInterval = pi
+        }
+        backgroundPollingEnabled = defaults.object(forKey: Keys.backgroundPollingEnabled) as? Bool ?? true
+        notificationsEnabled = defaults.object(forKey: Keys.notificationsEnabled) as? Bool ?? true
+        quietHoursEnabled = defaults.bool(forKey: Keys.quietHoursEnabled)
+        quietHoursStart = defaults.object(forKey: Keys.quietHoursStart) as? Int ?? 0
+        quietHoursEnd = defaults.object(forKey: Keys.quietHoursEnd) as? Int ?? 7
+        if let stored = defaults.array(forKey: Keys.languagePriority) as? [String], !stored.isEmpty {
+            languagePriority = stored
+        }
         kbDirectory = resolveBookmark()
+    }
+
+    func setPollInterval(_ value: PollInterval) {
+        pollInterval = value
+        defaults.set(value.rawValue, forKey: Keys.pollInterval)
+    }
+
+    func setBackgroundPollingEnabled(_ value: Bool) {
+        backgroundPollingEnabled = value
+        defaults.set(value, forKey: Keys.backgroundPollingEnabled)
+    }
+
+    func setNotificationsEnabled(_ value: Bool) {
+        notificationsEnabled = value
+        defaults.set(value, forKey: Keys.notificationsEnabled)
+    }
+
+    func setQuietHours(enabled: Bool, start: Int, end: Int) {
+        quietHoursEnabled = enabled
+        quietHoursStart = max(0, min(23, start))
+        quietHoursEnd = max(0, min(23, end))
+        defaults.set(enabled, forKey: Keys.quietHoursEnabled)
+        defaults.set(quietHoursStart, forKey: Keys.quietHoursStart)
+        defaults.set(quietHoursEnd, forKey: Keys.quietHoursEnd)
+    }
+
+    func setLanguagePriority(_ value: [String]) {
+        languagePriority = value
+        defaults.set(value, forKey: Keys.languagePriority)
+    }
+
+    /// Returns true if current time is inside the configured quiet hours window.
+    func isInQuietHours(now: Date = Date()) -> Bool {
+        guard quietHoursEnabled else { return false }
+        let hour = Calendar.current.component(.hour, from: now)
+        if quietHoursStart == quietHoursEnd { return false }
+        if quietHoursStart < quietHoursEnd {
+            return hour >= quietHoursStart && hour < quietHoursEnd
+        }
+        // Wraps midnight (e.g. 22 → 7)
+        return hour >= quietHoursStart || hour < quietHoursEnd
     }
 
     func setBrowser(_ choice: BrowserChoice) {

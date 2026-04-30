@@ -14,6 +14,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menuBarController = MenuBarController(appState: appState, delegate: self)
 
+        // Wire scheduler — only starts polling cycles if backgroundPollingEnabled
+        let scheduler = PollingScheduler(appState: appState)
+        appState.scheduler = scheduler
+        scheduler.start()
+
+        // Request notification authorisation in the background
+        Task { await NotificationsService.shared.requestAuthorisationIfNeeded() }
+
         if appState.needsOnboarding {
             showOnboarding()
         }
