@@ -3,12 +3,26 @@ import Foundation
 /// Schedules background polling via NSBackgroundActivityScheduler.
 /// Re-schedules itself when the user changes the interval or toggles the feature.
 @MainActor
-final class PollingScheduler {
+package final class PollingScheduler {
     private var activity: NSBackgroundActivityScheduler?
     private weak var appState: AppState?
 
-    package init(appState: AppState) {
+    init(appState: AppState) {
         self.appState = appState
+    }
+
+    /// Compute the scheduler tick interval. With per-channel intervals, the
+    /// scheduler must fire as often as the most-frequent channel — otherwise
+    /// a per-channel "hourly" setting would be capped by a slower global rate.
+    /// Take min over global interval and all per-channel non-manual intervals.
+    package static func effectiveTickInterval(channels: [TrackedChannel], globalSeconds: TimeInterval) -> TimeInterval {
+        let perChannel = channels.compactMap { ch -> TimeInterval? in
+            guard let v = ch.pollIntervalSeconds else { return nil }  // uses global already
+            if v == 0 { return nil }                                  // manual-only → ignore
+            return TimeInterval(v)
+        }
+        let candidates = [globalSeconds] + perChannel
+        return candidates.min() ?? globalSeconds
     }
 
     func start() {
@@ -18,7 +32,10 @@ final class PollingScheduler {
             Logger.shared.info("Background polling disabled in settings")
             return
         }
-        let interval = appState.settings.pollInterval.seconds
+        let interval = Self.effectiveTickInterval(
+            channels: appState.channelStore.channels,
+            globalSeconds: appState.settings.pollInterval.seconds
+        )
         let scheduler = NSBackgroundActivityScheduler(identifier: "io.yt-kb.poll")
         scheduler.repeats = true
         scheduler.interval = interval

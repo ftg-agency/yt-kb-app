@@ -23,9 +23,9 @@ actor PollingCoordinator {
         isPolling = true
         defer { isPolling = false }
 
-        let (channels, kbRoot, config, kbAvailable) = await MainActor.run {
+        let (kbRoot, config, kbAvailable) = await MainActor.run {
             appState.refreshKBAvailability()
-            return (appState.channelStore.channels, appState.settings.kbDirectory, appState.settings.ytdlpConfig, appState.kbDirectoryAvailable)
+            return (appState.settings.kbDirectory, appState.settings.ytdlpConfig, appState.kbDirectoryAvailable)
         }
         guard let kbRoot else {
             await MainActor.run { appState.lastError = "База знаний не настроена" }
@@ -45,6 +45,7 @@ actor PollingCoordinator {
             Task { @MainActor in
                 appState.isPolling = false
                 appState.pollingChannelURL = nil
+                appState.channelProgress.removeAll()
             }
         }
 
@@ -54,20 +55,45 @@ actor PollingCoordinator {
         let op = PollOperation(runner: YTDLPRunner.shared, config: config)
         var totalDownloaded = 0
         var botHit = false
+        var processedURLs: Set<String> = []
 
-        for ch in channels where ch.enabled {
-            let priorRetries = await MainActor.run { appState.channelStore.retryEntriesFor(channelURL: ch.url) }
-            let report = await pollOneInternal(
-                channel: ch,
-                op: op,
-                kbRoot: kbRoot,
-                appState: appState,
-                priorRetries: priorRetries
-            )
-            totalDownloaded += report.counts["ok"] ?? 0
-            if report.botCheckHit {
-                botHit = true
-                break
+        // Outer loop picks up channels added DURING this poll cycle. After we
+        // finish the snapshot, we re-fetch the list and process anything new.
+        // This is what makes "click Проверить → add channel mid-poll" work.
+        outer: while !botHit {
+            let pending: [TrackedChannel]
+            if trigger == .scheduled {
+                let globalSec = await MainActor.run { appState.settings.pollInterval.seconds }
+                let now = Date()
+                pending = await MainActor.run {
+                    appState.channelStore.channels.filter { ch in
+                        ch.enabled
+                            && !processedURLs.contains(ch.url)
+                            && ch.isDueForScheduledPoll(now: now, globalSeconds: globalSec)
+                    }
+                }
+            } else {
+                pending = await MainActor.run {
+                    appState.channelStore.channels.filter { $0.enabled && !processedURLs.contains($0.url) }
+                }
+            }
+            if pending.isEmpty { break outer }
+
+            for ch in pending {
+                let priorRetries = await MainActor.run { appState.channelStore.retryEntriesFor(channelURL: ch.url) }
+                let report = await pollOneInternal(
+                    channel: ch,
+                    op: op,
+                    kbRoot: kbRoot,
+                    appState: appState,
+                    priorRetries: priorRetries
+                )
+                totalDownloaded += report.counts["ok"] ?? 0
+                processedURLs.insert(ch.url)
+                if report.botCheckHit {
+                    botHit = true
+                    break outer
+                }
             }
         }
 
@@ -108,6 +134,7 @@ actor PollingCoordinator {
             Task { @MainActor in
                 appState.isPolling = false
                 appState.pollingChannelURL = nil
+                appState.channelProgress.removeAll()
             }
         }
 
@@ -138,16 +165,30 @@ actor PollingCoordinator {
         appState: AppState,
         priorRetries: [RetryQueueEntry]
     ) async -> PollChannelReport {
+        let channelURL = channel.url
         await MainActor.run {
-            appState.pollingChannelURL = channel.url
+            appState.pollingChannelURL = channelURL
+            // Seed progress immediately so the row shows "starting…" without flicker
+            appState.channelProgress[channelURL] = ChannelProgress(
+                phase: .resolving,
+                current: 0, total: 0, label: nil,
+                isInitialIndexing: channel.lastPolledAt == nil
+            )
         }
         Logger.shared.info("Polling \(channel.name) (\(channel.url))")
         let report = await op.pollChannel(
             channel: channel,
             kbRoot: kbRoot,
             priorRetries: priorRetries,
-            progress: { _ in }
+            progress: { [appState, channelURL] event in
+                Task { @MainActor in
+                    appState.channelProgress[channelURL] = event
+                }
+            }
         )
+        await MainActor.run {
+            appState.channelProgress[channelURL] = nil
+        }
 
         // Apply retry-queue mutations
         let resolved = report.resolvedRetries

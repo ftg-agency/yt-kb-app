@@ -1,16 +1,58 @@
 import Foundation
 import Combine
 
-struct TrackedChannel: Codable, Identifiable, Equatable {
-    var id: String { url }
-    var url: String
-    var channelId: String?
-    var name: String
-    var addedAt: Date
-    var lastPolledAt: Date?
-    var lastPollStatus: String?
-    var lastPollError: String?
-    var enabled: Bool = true
+package struct TrackedChannel: Codable, Identifiable, Equatable {
+    package var id: String { url }
+    package var url: String
+    package var channelId: String?
+    package var name: String
+    package var addedAt: Date
+    package var lastPolledAt: Date?
+    package var lastPollStatus: String?
+    package var lastPollError: String?
+    package var enabled: Bool = true
+
+    /// Per-channel poll interval. Semantics:
+    /// - nil   → use global Settings.pollInterval
+    /// - 0     → manual only (scheduler skips this channel)
+    /// - > 0   → poll every N seconds
+    package var pollIntervalSeconds: Int? = nil
+
+    package init(
+        url: String,
+        channelId: String? = nil,
+        name: String,
+        addedAt: Date,
+        lastPolledAt: Date? = nil,
+        lastPollStatus: String? = nil,
+        lastPollError: String? = nil,
+        enabled: Bool = true,
+        pollIntervalSeconds: Int? = nil
+    ) {
+        self.url = url
+        self.channelId = channelId
+        self.name = name
+        self.addedAt = addedAt
+        self.lastPolledAt = lastPolledAt
+        self.lastPollStatus = lastPollStatus
+        self.lastPollError = lastPollError
+        self.enabled = enabled
+        self.pollIntervalSeconds = pollIntervalSeconds
+    }
+
+    /// Returns the effective interval in seconds (or nil if "manual only").
+    package func effectivePollInterval(globalSeconds: TimeInterval) -> TimeInterval? {
+        guard let v = pollIntervalSeconds else { return globalSeconds }
+        return v == 0 ? nil : TimeInterval(v)
+    }
+
+    /// True if this channel is due for a scheduled poll right now.
+    /// "Manual only" channels return false. Never-polled channels return true.
+    package func isDueForScheduledPoll(now: Date = Date(), globalSeconds: TimeInterval) -> Bool {
+        guard let interval = effectivePollInterval(globalSeconds: globalSeconds) else { return false }
+        guard let last = lastPolledAt else { return true }
+        return now.timeIntervalSince(last) >= interval
+    }
 }
 
 package struct RetryQueueEntry: Codable, Identifiable, Equatable {

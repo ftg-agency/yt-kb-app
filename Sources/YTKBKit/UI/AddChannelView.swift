@@ -103,5 +103,13 @@ struct AddChannelView: View {
         )
         appState.channelStore.addChannel(channel)
         isPresented = false
+
+        // Trigger immediate indexing.
+        // - If a poll is already running, the pickup-newly-added loop in
+        //   PollingCoordinator.pollAll will catch this channel automatically
+        //   when it re-fetches the channel list at the start of its next iteration.
+        //   Our pollOne call will be a no-op (early-return on isPolling).
+        // - Otherwise, pollOne fires immediately and the popover shows progress.
+        Task { await PollingCoordinator.shared.pollOne(channel: channel, appState: appState) }
     }
 }

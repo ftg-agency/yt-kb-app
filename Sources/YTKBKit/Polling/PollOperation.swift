@@ -37,15 +37,18 @@ actor PollOperation {
 
     /// Process one channel: list videos → diff vs existing → for each new, fetch+subs+write.
     /// Also attempts re-download for `priorRetries` whose backoff has expired.
+    /// `progress` is called with structured ChannelProgress events that the UI
+    /// turns into a per-row progress bar.
     func pollChannel(
         channel: TrackedChannel,
         kbRoot: URL,
         priorRetries: [RetryQueueEntry],
-        progress: @Sendable (String) -> Void
+        progress: @Sendable (ChannelProgress) -> Void
     ) async -> PollChannelReport {
         var report = PollChannelReport()
+        let isInitial = channel.lastPolledAt == nil
 
-        progress("Резолвлю канал…")
+        progress(ChannelProgress(phase: .resolving, current: 0, total: 0, label: nil, isInitialIndexing: isInitial))
         let videos: [VideoRef]
         do {
             videos = try await resolver.listVideos(channelURL: channel.url)
@@ -55,30 +58,44 @@ actor PollOperation {
             return report
         }
 
-        progress("Сканирую базу…")
+        progress(ChannelProgress(phase: .scanning, current: 0, total: 0, label: nil, isInitialIndexing: isInitial))
         let existing = KBScanner.scanExistingIds(in: kbRoot)
         let retryIds = Set(priorRetries.map(\.videoId))
         let toProcess = videos.filter { existing[$0.videoId] == nil && !retryIds.contains($0.videoId) }
         Logger.shared.info("[\(channel.name)] found=\(videos.count) new=\(toProcess.count) retries=\(priorRetries.count)")
 
+        let eligible = RetryProcessor.eligibleEntries(priorRetries)
+        let totalSteps = toProcess.count + eligible.count
+
         // First, process new videos
         for (idx, ref) in toProcess.enumerated() {
-            let label = ref.title.map { String($0.prefix(40)) } ?? ref.videoId
-            progress("[\(idx + 1)/\(toProcess.count)] \(label)")
+            let label = ref.title.map { String($0.prefix(60)) } ?? ref.videoId
+            progress(ChannelProgress(
+                phase: .processing,
+                current: idx + 1,
+                total: totalSteps,
+                label: label,
+                isInitialIndexing: isInitial
+            ))
             let outcome = await processVideo(ref: ref, kbRoot: kbRoot)
             applyOutcome(outcome, ref: ref, channelURL: channel.url, channelName: channel.name, isRetry: false, report: &report)
             if report.botCheckHit { return report }
         }
 
         // Then, process eligible retry-queue entries
-        let eligible = RetryProcessor.eligibleEntries(priorRetries)
         if !eligible.isEmpty {
             Logger.shared.info("[\(channel.name)] processing \(eligible.count) retry entries")
         }
         for (idx, entry) in eligible.enumerated() {
             let ref = VideoRef(videoId: entry.videoId, title: entry.videoTitle)
-            let label = entry.videoTitle.map { String($0.prefix(40)) } ?? entry.videoId
-            progress("[retry \(idx + 1)/\(eligible.count)] \(label)")
+            let label = entry.videoTitle.map { String($0.prefix(60)) } ?? entry.videoId
+            progress(ChannelProgress(
+                phase: .retrying,
+                current: toProcess.count + idx + 1,
+                total: totalSteps,
+                label: label,
+                isInitialIndexing: false
+            ))
             let outcome = await processVideo(ref: ref, kbRoot: kbRoot)
             applyOutcome(outcome, ref: ref, channelURL: channel.url, channelName: channel.name, isRetry: true, report: &report, priorEntry: entry)
             if report.botCheckHit { return report }

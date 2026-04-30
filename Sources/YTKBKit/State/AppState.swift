@@ -1,6 +1,35 @@
 import Foundation
 import Combine
 
+/// Progress snapshot for one channel currently being polled. Drives the
+/// in-row progress bar in the popover.
+package struct ChannelProgress: Equatable, Sendable {
+    package enum Phase: Equatable, Sendable {
+        case resolving           // listing channel videos via flat-playlist
+        case scanning            // pre-scanning KB for existing IDs
+        case processing          // fetching metadata + subs for one video
+        case retrying            // working on retry-queue entry
+    }
+    package var phase: Phase
+    package var current: Int      // 1-based index of the video being processed (0 for resolving/scanning)
+    package var total: Int        // total to process this cycle
+    package var label: String?    // current video title (or nil)
+    package var isInitialIndexing: Bool = false  // set when channel has never been polled
+
+    package init(phase: Phase, current: Int, total: Int, label: String? = nil, isInitialIndexing: Bool = false) {
+        self.phase = phase
+        self.current = current
+        self.total = total
+        self.label = label
+        self.isInitialIndexing = isInitialIndexing
+    }
+
+    package var fraction: Double {
+        guard total > 0 else { return 0 }
+        return min(1.0, Double(current) / Double(total))
+    }
+}
+
 @MainActor
 final class AppState: ObservableObject {
     let settings = Settings()
@@ -10,6 +39,9 @@ final class AppState: ObservableObject {
     @Published var pollingChannelURL: String?
     @Published var lastError: String?
     @Published var needsOnboarding: Bool = false
+
+    /// Per-channel progress while polling. Keyed by channel URL.
+    @Published var channelProgress: [String: ChannelProgress] = [:]
 
     /// True while NSPopover is shown (so notifications can suppress themselves).
     @Published var isPopoverOpen: Bool = false
