@@ -57,8 +57,23 @@ package actor ChannelResolver {
     private func fetchEntries(channelURL: String) async throws -> FlatPlaylistResponse {
         let normalised = Self.normaliseChannelURL(channelURL)
         var args = config.baseArgs
-        args.append(contentsOf: ["--flat-playlist", "--dump-single-json", "--no-warnings", normalised])
-        let result = try await runner.run(args, timeout: 120)
+        args.append(contentsOf: [
+            "--flat-playlist",
+            "--dump-single-json",
+            "--no-warnings",
+            // YouTube's web tab response often caps a channel listing around 500
+            // entries via continuation-token quirks. The `tv_simply` player client
+            // uses a different endpoint that returns full channel histories.
+            // We list it first, then fall back to web/web_safari in case tv_simply
+            // is rejected.
+            "--extractor-args", "youtube:player_client=tv_simply,web,web_safari",
+            // Explicit slice — defensively ensures yt-dlp doesn't apply any
+            // hidden default cap. yt-dlp accepts -I 1: as "all from index 1".
+            "-I", "1:99999",
+            normalised
+        ])
+        // Channel listings can take longer than the default 120s for large channels.
+        let result = try await runner.run(args, timeout: 360)
         guard result.exitCode == 0 else {
             throw YTDLPError.nonZeroExit(result.exitCode, result.stderr.lastNonEmptyLine)
         }

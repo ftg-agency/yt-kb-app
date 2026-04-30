@@ -44,10 +44,16 @@ struct OnboardingView: View {
                     }
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(step == 0 && appState.settings.kbDirectory == nil)
             }
         }
         .padding(20)
+        .onAppear {
+            // Pre-set the default KB dir so step 1 "Дальше" is enabled out of the box.
+            // User can override by clicking "Выбрать..." or change later in Settings.
+            if appState.settings.kbDirectory == nil {
+                useDefault()
+            }
+        }
         .frame(width: 540, height: 420)
     }
 

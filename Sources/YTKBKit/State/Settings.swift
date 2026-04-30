@@ -34,6 +34,15 @@ final class Settings: ObservableObject {
             case .daily: return "Раз в день"
             }
         }
+        /// Lowercase short form used inside other labels.
+        var shortLabel: String {
+            switch self {
+            case .hourly: return "каждый час"
+            case .every3h: return "каждые 3 часа"
+            case .every6h: return "каждые 6 часов"
+            case .daily: return "раз в день"
+            }
+        }
         var seconds: TimeInterval { TimeInterval(rawValue) }
     }
 

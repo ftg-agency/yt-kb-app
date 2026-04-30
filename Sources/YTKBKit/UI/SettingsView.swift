@@ -9,6 +9,8 @@ struct SettingsView: View {
         TabView {
             generalTab
                 .tabItem { Label("Базовые", systemImage: "gear") }
+            channelsTab
+                .tabItem { Label("Каналы", systemImage: "list.bullet") }
             scheduleTab
                 .tabItem { Label("Расписание", systemImage: "clock") }
             advancedTab
@@ -17,6 +19,84 @@ struct SettingsView: View {
                 .tabItem { Label("О приложении", systemImage: "info.circle") }
         }
         .padding(20)
+    }
+
+    private var channelsTab: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Каналы (\(appState.channelStore.channels.count))").font(.headline)
+                Spacer()
+                Button("Переиндексировать всё") { reindexAll() }
+                    .disabled(appState.isPolling || appState.channelStore.channels.isEmpty)
+                Button("Проверить сейчас") {
+                    Task { await PollingCoordinator.shared.pollAll(appState: appState) }
+                }
+                .disabled(appState.isPolling || appState.channelStore.channels.isEmpty || !appState.kbDirectoryAvailable)
+            }
+            Text("Здесь можно поменять частоту проверки для каждого канала или временно отключить опрос. По умолчанию каналы опрашиваются с частотой из вкладки «Расписание» (\(appState.settings.pollInterval.shortLabel)).")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if appState.channelStore.channels.isEmpty {
+                VStack {
+                    Spacer()
+                    Text("Список пуст. Добавьте канал через popover в menu bar.")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                channelList
+            }
+        }
+        .padding(.vertical, 8)
+    }
+
+    private var channelList: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                ForEach(appState.channelStore.channels) { channel in
+                    SettingsChannelRow(
+                        channel: channel,
+                        globalLabel: appState.settings.pollInterval.shortLabel,
+                        progress: appState.channelProgress[channel.url],
+                        isPollingThis: appState.pollingChannelURL == channel.url,
+                        onSetInterval: { value in
+                            var updated = channel
+                            updated.pollIntervalSeconds = value
+                            appState.channelStore.updateChannel(updated)
+                            appState.restartScheduler()
+                        },
+                        onToggleEnabled: {
+                            var updated = channel
+                            updated.enabled.toggle()
+                            appState.channelStore.updateChannel(updated)
+                        },
+                        onPollOnly: { Task { await PollingCoordinator.shared.pollOne(channel: channel, appState: appState) } },
+                        onRemove: { appState.channelStore.removeChannel(url: channel.url) }
+                    )
+                    Divider()
+                }
+            }
+        }
+    }
+
+    private func reindexAll() {
+        let alert = NSAlert()
+        alert.messageText = "Переиндексировать все каналы?"
+        alert.informativeText = "Каналы будут помечены как «не опрашивались» и пройдут полный цикл проверки. Уже скачанные транскрипты не будут перезаписаны (idempotency по video_id). Подходит когда нужно дочистить пропущенное и заново посмотреть retry-очередь."
+        alert.addButton(withTitle: "Переиндексировать")
+        alert.addButton(withTitle: "Отмена")
+        alert.alertStyle = .informational
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        for channel in appState.channelStore.channels {
+            var updated = channel
+            updated.lastPolledAt = nil
+            updated.lastPollStatus = nil
+            updated.lastPollError = nil
+            appState.channelStore.updateChannel(updated)
+        }
+        Task { await PollingCoordinator.shared.pollAll(appState: appState) }
     }
 
     private var generalTab: some View {
@@ -158,13 +238,15 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
                 LanguagePriorityList(appState: appState)
             }
-            Section("Каналы") {
+            Section("Импорт / экспорт") {
                 Button("Импортировать каналы из существующей KB-папки") { rediscover() }
                 Button("Экспортировать список каналов в JSON…") { exportChannels() }
                     .disabled(appState.channelStore.channels.isEmpty)
                 Button("Импортировать каналы из JSON…") { importChannels() }
-                if !appState.channelStore.retryQueue.isEmpty {
-                    Text("В retry-очереди: \(appState.channelStore.retryQueue.count) видео")
+            }
+            if !appState.channelStore.retryQueue.isEmpty {
+                Section("Retry-очередь") {
+                    Text("В очереди: \(appState.channelStore.retryQueue.count) видео без субтитров — будут повторно проверены автоматически (см. §retry).")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

@@ -92,22 +92,42 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
     }
 
     @objc private func togglePopover(_ sender: AnyObject?) {
-        guard let button = statusItem.button else { return }
         if popover.isShown {
             popover.performClose(sender)
         } else {
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            popover.contentViewController?.view.window?.makeKey()
+            presentPopover()
         }
     }
 
     /// Programmatically open the popover (called from notification click).
     package func showPopover() {
-        guard let button = statusItem.button else { return }
         if !popover.isShown {
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            popover.contentViewController?.view.window?.makeKey()
+            presentPopover()
         }
+    }
+
+    /// Position the popover anchored to the status-bar button. Using `.zero`
+    /// rather than `button.bounds` so AppKit derives the anchor from the
+    /// button's actual on-screen frame (works even on macOS 15 where
+    /// `button.bounds` can return an empty rect on first call).
+    private func presentPopover() {
+        guard let button = statusItem.button, let window = button.window else { return }
+        // Force layout so the button has a valid frame in the menu bar window
+        button.needsLayout = true
+        window.layoutIfNeeded()
+
+        // Use button.bounds when non-zero, otherwise fall back to a 1×1 rect
+        // at the button's mid-x/min-y so the popover still anchors to the icon.
+        let anchorRect: NSRect
+        if button.bounds.width > 0 && button.bounds.height > 0 {
+            anchorRect = button.bounds
+        } else {
+            anchorRect = NSRect(x: 0, y: 0, width: 1, height: 1)
+        }
+
+        popover.show(relativeTo: anchorRect, of: button, preferredEdge: .minY)
+        popover.contentViewController?.view.window?.makeKey()
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     // MARK: - NSPopoverDelegate

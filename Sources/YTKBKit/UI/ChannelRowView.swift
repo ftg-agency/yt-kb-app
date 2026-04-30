@@ -5,6 +5,9 @@ struct ChannelRowView: View {
     let isPollingThis: Bool
     var isFocused: Bool = false
     var progress: ChannelProgress? = nil
+    /// Display label for the global default interval (e.g. "каждые 3 часа").
+    /// Used to render "По умолчанию (каждые 3 часа)" in the context menu.
+    var globalIntervalLabel: String = "по настройкам"
     let onPollOnly: () -> Void
     let onToggleEnabled: () -> Void
     let onRemove: () -> Void
@@ -26,8 +29,8 @@ struct ChannelRowView: View {
                                 .font(.caption2)
                                 .foregroundStyle(.tertiary)
                         }
-                        if channel.pollIntervalSeconds == 0 {
-                            Text("(только вручную)")
+                        if let perChannelLabel = perChannelOverrideLabel {
+                            Text(perChannelLabel)
                                 .font(.caption2)
                                 .foregroundStyle(.tertiary)
                         }
@@ -56,7 +59,7 @@ struct ChannelRowView: View {
                 .disabled(isPollingThis || !channel.enabled)
             Divider()
             Menu("Частота проверки") {
-                intervalMenuItem(title: "По умолчанию", value: nil)
+                intervalMenuItem(title: "По умолчанию (\(globalIntervalLabel))", value: nil)
                 Divider()
                 intervalMenuItem(title: "Каждый час", value: 3600)
                 intervalMenuItem(title: "Каждые 3 часа", value: 10800)
@@ -171,5 +174,18 @@ struct ChannelRowView: View {
         if interval < 3600 { return "\(Int(interval / 60)) мин назад" }
         if interval < 86400 { return "\(Int(interval / 3600)) ч назад" }
         return "\(Int(interval / 86400)) д назад"
+    }
+
+    /// Label suffix shown when the channel has a non-default poll interval.
+    private var perChannelOverrideLabel: String? {
+        guard let v = channel.pollIntervalSeconds else { return nil }
+        if v == 0 { return "(только вручную)" }
+        switch v {
+        case 3600:  return "(ежечасно)"
+        case 10800: return "(каждые 3ч)"
+        case 21600: return "(каждые 6ч)"
+        case 86400: return "(раз в день)"
+        default:    return "(\(v / 60) мин)"
+        }
     }
 }

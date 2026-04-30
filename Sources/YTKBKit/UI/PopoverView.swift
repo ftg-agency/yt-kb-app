@@ -121,12 +121,13 @@ struct PopoverView: View {
                 ScrollViewReader { scrollProxy in
                     ScrollView {
                         VStack(spacing: 0) {
-                            ForEach(appState.channelStore.channels) { channel in
+                            ForEach(sortedChannels) { channel in
                                 ChannelRowView(
                                     channel: channel,
                                     isPollingThis: appState.pollingChannelURL == channel.url,
                                     isFocused: appState.focusChannelURL == channel.url,
                                     progress: appState.channelProgress[channel.url],
+                                    globalIntervalLabel: appState.settings.pollInterval.shortLabel,
                                     onPollOnly: { Task { await PollingCoordinator.shared.pollOne(channel: channel, appState: appState) } },
                                     onToggleEnabled: {
                                         var updated = channel
@@ -207,6 +208,36 @@ struct PopoverView: View {
         .controlSize(.regular)
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
+    }
+
+    /// Sort priority for the popover list:
+    ///   1. Channel currently being polled (so user can see live progress at top)
+    ///   2. Channels never polled yet (initial-indexing in progress / queued)
+    ///   3. Errors (so user notices)
+    ///   4. By lastPolledAt descending (most recently polled first)
+    private var sortedChannels: [TrackedChannel] {
+        let pollingURL = appState.pollingChannelURL
+        return appState.channelStore.channels.sorted { a, b in
+            // Currently polling at top
+            let aPolling = (a.url == pollingURL) ? 0 : 1
+            let bPolling = (b.url == pollingURL) ? 0 : 1
+            if aPolling != bPolling { return aPolling < bPolling }
+            // Never-polled (initial indexing) next
+            let aNew = a.lastPolledAt == nil ? 0 : 1
+            let bNew = b.lastPolledAt == nil ? 0 : 1
+            if aNew != bNew { return aNew < bNew }
+            // Errors next
+            let aErr = (a.lastPollStatus == "error") ? 0 : 1
+            let bErr = (b.lastPollStatus == "error") ? 0 : 1
+            if aErr != bErr { return aErr < bErr }
+            // Newest poll first
+            switch (a.lastPolledAt, b.lastPolledAt) {
+            case let (la?, lb?): return la > lb
+            case (.some, .none): return true
+            case (.none, .some): return false
+            case (.none, .none): return a.name < b.name
+            }
+        }
     }
 
     private func openChannelFolder(channel: TrackedChannel) {

@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct AddChannelView: View {
     @ObservedObject var appState: AppState
@@ -9,6 +10,7 @@ struct AddChannelView: View {
     @State private var error: String?
     @State private var resolvedName: String?
     @State private var resolvedChannelId: String?
+    @FocusState private var urlFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -20,7 +22,15 @@ struct AddChannelView: View {
 
             TextField("https://www.youtube.com/@handle", text: $url)
                 .textFieldStyle(.roundedBorder)
+                .focused($urlFocused)
                 .disabled(resolving)
+                .onSubmit {
+                    if resolvedName == nil {
+                        resolve()
+                    } else {
+                        save()
+                    }
+                }
 
             if let resolvedName {
                 HStack {
@@ -40,6 +50,7 @@ struct AddChannelView: View {
             HStack {
                 Spacer()
                 Button("Отмена") { isPresented = false }
+                    .keyboardShortcut(.cancelAction)
                 if resolvedName != nil {
                     Button("Добавить") { save() }
                         .keyboardShortcut(.defaultAction)
@@ -49,6 +60,20 @@ struct AddChannelView: View {
                         .keyboardShortcut(.defaultAction)
                 }
             }
+
+            // Hidden Cmd+V handler — LSUIElement apps have no main menu, so the
+            // standard Edit→Paste shortcut isn't wired up. We catch Cmd+V here
+            // and replace the URL field with the pasteboard contents.
+            // Right-click → Paste already works because that's a NSTextField context menu.
+            Button("") {
+                if let str = NSPasteboard.general.string(forType: .string) {
+                    url = str.trimmingCharacters(in: .whitespacesAndNewlines)
+                    urlFocused = true
+                }
+            }
+            .keyboardShortcut("v", modifiers: .command)
+            .opacity(0)
+            .frame(width: 0, height: 0)
         }
         .padding(20)
         .frame(width: 460, height: 220)
@@ -59,10 +84,23 @@ struct AddChannelView: View {
                     .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
             }
         }
+        .onAppear {
+            // Defer focus so the sheet has time to settle into the responder chain
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                urlFocused = true
+                // If clipboard already has a YouTube URL, pre-fill it as a hint
+                if url.isEmpty,
+                   let candidate = NSPasteboard.general.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   candidate.contains("youtube.com") || candidate.contains("youtu.be") {
+                    url = candidate
+                }
+            }
+        }
     }
 
     private func resolve() {
         let raw = url.trimmingCharacters(in: .whitespaces)
+        guard !raw.isEmpty else { return }
         error = nil
         resolvedName = nil
         resolvedChannelId = nil
@@ -103,13 +141,6 @@ struct AddChannelView: View {
         )
         appState.channelStore.addChannel(channel)
         isPresented = false
-
-        // Trigger immediate indexing.
-        // - If a poll is already running, the pickup-newly-added loop in
-        //   PollingCoordinator.pollAll will catch this channel automatically
-        //   when it re-fetches the channel list at the start of its next iteration.
-        //   Our pollOne call will be a no-op (early-return on isPolling).
-        // - Otherwise, pollOne fires immediately and the popover shows progress.
         Task { await PollingCoordinator.shared.pollOne(channel: channel, appState: appState) }
     }
 }
