@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<timedtext format="3">
+  <body>
+    <p t="500" d="2750">Hello and welcome to the show</p>
+    <p t="3250" d="2750">Hello and welcome to the show today</p>
+    <p t="6000" d="3500"><s>Today we're talking</s> about <s>auto-captions</s></p>
+    <p t="10000" d="3000">Today we're talking about auto-captions</p>
+    <p t="13500" d="3500">And how YouTube serves them in a few formats</p>
+    <p t="17000" d="0"></p>
+  </body>
+</timedtext>

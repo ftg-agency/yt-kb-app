@@ -1,0 +1,56 @@
+name: Build & release
+
+# Builds yt-kb.app and packages it as a DMG when a tag like `v*` is pushed.
+# Uses GitHub's macos-15 runner (Apple Silicon, Xcode + CommandLineTools both available).
+# Tests run as a custom executable target — no XCTest dependency.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          xcode-select -p
+          swift --version
+
+      - name: Run unit tests
+        run: swift run YTKBAppTests
+
+      - name: Build & package DMG
+        env:
+          SKIP_TESTS: "1"  # already ran above; build.sh skips tests when set
+        run: ./scripts/build.sh
+
+      - name: Upload DMG artifact (workflow run)
+        uses: actions/upload-artifact@v4
+        with:
+          name: YTKB.dmg
+          path: dist/YTKB.dmg
+          retention-days: 30
+
+      - name: Attach DMG to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Create a release if it doesn't exist; either way, attach the DMG.
+          tag="${GITHUB_REF##*/}"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --title "$tag" --notes "Automated release. See README for install instructions."
+          fi
+          gh release upload "$tag" dist/YTKB.dmg --clobber

@@ -1,0 +1,11 @@
+{
+  "wireMagic": "pb3",
+  "events": [
+    {"tStartMs": 500, "dDurationMs": 2750, "segs": [{"utf8": "Hello and welcome to the show"}]},
+    {"tStartMs": 3250, "dDurationMs": 2750, "segs": [{"utf8": "Hello and welcome to the show today"}]},
+    {"tStartMs": 6000, "dDurationMs": 3500, "segs": [{"utf8": "Today we're talking "}, {"utf8": "about auto-captions"}]},
+    {"tStartMs": 10000, "dDurationMs": 3000, "segs": [{"utf8": "Today we're talking about auto-captions"}]},
+    {"tStartMs": 13500, "dDurationMs": 3500, "segs": [{"utf8": "And how YouTube serves them in a few formats"}]},
+    {"tStartMs": 17000, "dDurationMs": 100}
+  ]
+}
