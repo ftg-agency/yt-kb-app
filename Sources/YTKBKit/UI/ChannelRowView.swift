@@ -3,6 +3,7 @@ import SwiftUI
 struct ChannelRowView: View {
     let channel: TrackedChannel
     let isPollingThis: Bool
+    var isFocused: Bool = false
     let onPollOnly: () -> Void
     let onToggleEnabled: () -> Void
     let onRemove: () -> Void
@@ -34,6 +35,8 @@ struct ChannelRowView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
         .opacity(channel.enabled ? 1.0 : 0.6)
+        .background(isFocused ? Color.accentColor.opacity(0.18) : Color.clear)
+        .animation(.easeInOut(duration: 0.4), value: isFocused)
         .contextMenu {
             Button("Открыть папку в Finder", action: onOpenFolder)
             Button("Проверить только этот канал", action: onPollOnly)

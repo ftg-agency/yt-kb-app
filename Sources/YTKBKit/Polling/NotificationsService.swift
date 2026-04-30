@@ -2,8 +2,8 @@ import Foundation
 import UserNotifications
 
 /// Wrapper around UNUserNotificationCenter for poll-related events.
-/// Suppresses notifications when popover is open (since the user can already see updates),
-/// when notifications are disabled in Settings, and when in quiet hours.
+/// Suppresses notifications when popover is open (per spec §9), when disabled
+/// in Settings, and when in quiet hours.
 @MainActor
 final class NotificationsService {
     static let shared = NotificationsService()
@@ -27,17 +27,28 @@ final class NotificationsService {
         }
     }
 
-    /// Post a notification if user enabled them and we have permission.
-    func post(title: String, body: String, critical: Bool = false, identifier: String = UUID().uuidString) async {
+    /// Post a notification if user has enabled them and the popover is closed.
+    /// `channelURL` is propagated to userInfo so click-to-open can deep-link to it.
+    func post(
+        title: String,
+        body: String,
+        critical: Bool = false,
+        identifier: String = UUID().uuidString,
+        channelURL: String? = nil,
+        suppressIfPopoverOpen: Bool = true,
+        appState: AppState? = nil
+    ) async {
+        if suppressIfPopoverOpen, let appState, appState.isPopoverOpen {
+            return  // user is already looking at the UI
+        }
         await requestAuthorisationIfNeeded()
         guard hasAuthorisation else { return }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
-        if critical {
-            content.sound = .defaultCritical
-        } else {
-            content.sound = .default
+        content.sound = critical ? .defaultCritical : .default
+        if let channelURL {
+            content.userInfo = ["channel_url": channelURL]
         }
         let request = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
         do {
@@ -47,28 +58,34 @@ final class NotificationsService {
         }
     }
 
-    func postSuccess(downloaded: Int) async {
+    func postSuccess(downloaded: Int, appState: AppState) async {
         await post(
             title: "yt-kb",
             body: "Скачано \(downloaded) новых транскрипт\(pluralForm(downloaded))",
-            identifier: "io.yt-kb.notif.success"
+            identifier: "io.yt-kb.notif.success",
+            appState: appState
         )
     }
 
-    func postChannelError(channelName: String, message: String) async {
+    func postChannelError(channelName: String, channelURL: String, message: String, appState: AppState) async {
         await post(
             title: "yt-kb · ошибка",
             body: "\(channelName): \(message)",
-            identifier: "io.yt-kb.notif.err.\(channelName)"
+            identifier: "io.yt-kb.notif.err.\(channelName)",
+            channelURL: channelURL,
+            appState: appState
         )
     }
 
-    func postBotCheck() async {
+    func postBotCheck(appState: AppState) async {
+        // Bot-check is critical — fires even with popover open.
         await post(
             title: "yt-kb · YouTube требует cookies",
             body: "Залогиньтесь в YouTube в выбранном браузере и попробуйте снова.",
             critical: true,
-            identifier: "io.yt-kb.notif.botcheck"
+            identifier: "io.yt-kb.notif.botcheck",
+            suppressIfPopoverOpen: false,
+            appState: appState
         )
     }
 

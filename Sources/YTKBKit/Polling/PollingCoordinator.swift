@@ -23,11 +23,17 @@ actor PollingCoordinator {
         isPolling = true
         defer { isPolling = false }
 
-        let (channels, kbRoot, config) = await MainActor.run {
-            (appState.channelStore.channels, appState.settings.kbDirectory, appState.settings.ytdlpConfig)
+        let (channels, kbRoot, config, kbAvailable) = await MainActor.run {
+            appState.refreshKBAvailability()
+            return (appState.channelStore.channels, appState.settings.kbDirectory, appState.settings.ytdlpConfig, appState.kbDirectoryAvailable)
         }
         guard let kbRoot else {
             await MainActor.run { appState.lastError = "База знаний не настроена" }
+            return
+        }
+        guard kbAvailable else {
+            await MainActor.run { appState.lastError = "Папка базы знаний недоступна (диск отключён?)" }
+            Logger.shared.warn("pollAll: KB unreachable, polling paused until directory comes back")
             return
         }
 
@@ -81,11 +87,16 @@ actor PollingCoordinator {
         isPolling = true
         defer { isPolling = false }
 
-        let (kbRoot, config) = await MainActor.run {
-            (appState.settings.kbDirectory, appState.settings.ytdlpConfig)
+        let (kbRoot, config, kbAvailable) = await MainActor.run {
+            appState.refreshKBAvailability()
+            return (appState.settings.kbDirectory, appState.settings.ytdlpConfig, appState.kbDirectoryAvailable)
         }
         guard let kbRoot else {
             await MainActor.run { appState.lastError = "База знаний не настроена" }
+            return
+        }
+        guard kbAvailable else {
+            await MainActor.run { appState.lastError = "Папка базы знаний недоступна" }
             return
         }
 
@@ -168,7 +179,10 @@ actor PollingCoordinator {
             }
             // Trigger error notification once per channel
             if okCount == 0, let err = errSnapshot, !report.botCheckHit {
-                Task { await NotificationsService.shared.postChannelError(channelName: channel.name, message: String(err.prefix(120))) }
+                let name = channel.name
+                let url = channel.url
+                let msg = String(err.prefix(120))
+                Task { await NotificationsService.shared.postChannelError(channelName: name, channelURL: url, message: msg, appState: appState) }
             }
         }
         return report
@@ -182,13 +196,12 @@ actor PollingCoordinator {
     ) async {
         let notificationsEnabled = await MainActor.run { appState.settings.notificationsEnabled }
         guard notificationsEnabled else { return }
-        // Suppress non-critical notifications on manual triggers to avoid duplicating UI feedback
         if botHit {
-            await NotificationsService.shared.postBotCheck()
+            await NotificationsService.shared.postBotCheck(appState: appState)
             return
         }
         if trigger == .scheduled, totalDownloaded > 0 {
-            await NotificationsService.shared.postSuccess(downloaded: totalDownloaded)
+            await NotificationsService.shared.postSuccess(downloaded: totalDownloaded, appState: appState)
         }
     }
 }

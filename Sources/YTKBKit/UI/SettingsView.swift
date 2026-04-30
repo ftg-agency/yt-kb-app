@@ -210,14 +210,88 @@ struct SettingsView: View {
         } else {
             panel.directoryURL = appState.settings.defaultKBDirectory()
         }
-        if panel.runModal() == .OK, let url = panel.url {
-            do {
-                try appState.settings.setKBDirectory(url)
-                rediscover()
-            } catch {
-                Logger.shared.error("setKBDirectory failed: \(error)")
+        guard panel.runModal() == .OK, let newURL = panel.url else { return }
+
+        let oldURL = appState.settings.kbDirectory
+        // Offer to migrate if old dir had content and new dir is different
+        if let oldURL, oldURL != newURL {
+            let started = oldURL.startAccessingSecurityScopedResource()
+            let hasContent = KBMigrator.hasContent(at: oldURL)
+            if started { oldURL.stopAccessingSecurityScopedResource() }
+
+            if hasContent {
+                let alert = NSAlert()
+                alert.messageText = "Что делать с текущей базой?"
+                alert.informativeText = "В \(oldURL.lastPathComponent) уже есть транскрипты. Перенести их в новую папку или оставить там?"
+                alert.alertStyle = .informational
+                alert.addButton(withTitle: "Переместить")
+                alert.addButton(withTitle: "Оставить там")
+                alert.addButton(withTitle: "Отмена")
+                let response = alert.runModal()
+                switch response {
+                case .alertFirstButtonReturn:
+                    do {
+                        try appState.settings.setKBDirectory(newURL)
+                        runMigration(from: oldURL, to: newURL)
+                        rediscover()
+                    } catch {
+                        Logger.shared.error("setKBDirectory failed: \(error)")
+                    }
+                    return
+                case .alertSecondButtonReturn:
+                    do {
+                        try appState.settings.setKBDirectory(newURL)
+                        rediscover()
+                    } catch {
+                        Logger.shared.error("setKBDirectory failed: \(error)")
+                    }
+                    return
+                default:
+                    return  // Cancel
+                }
             }
         }
+
+        // No migration needed
+        do {
+            try appState.settings.setKBDirectory(newURL)
+            rediscover()
+        } catch {
+            Logger.shared.error("setKBDirectory failed: \(error)")
+        }
+    }
+
+    private func runMigration(from oldURL: URL, to newURL: URL) {
+        let oldStarted = oldURL.startAccessingSecurityScopedResource()
+        defer { if oldStarted { oldURL.stopAccessingSecurityScopedResource() } }
+        let newStarted = newURL.startAccessingSecurityScopedResource()
+        defer { if newStarted { newURL.stopAccessingSecurityScopedResource() } }
+
+        Logger.shared.info("KB migration: \(oldURL.path) → \(newURL.path)")
+        let report = KBMigrator.migrate(from: oldURL, to: newURL)
+        Logger.shared.info("KB migration done: copied=\(report.copied) skipped=\(report.skipped) failed=\(report.failed.count) bytes=\(report.bytesCopied)")
+
+        let alert = NSAlert()
+        alert.messageText = "Перенос завершён"
+        var info = "Перемещено: \(report.copied) файлов (~\(formatBytes(report.bytesCopied)))"
+        if report.skipped > 0 { info += "\nПропущено (уже было): \(report.skipped)" }
+        if !report.failed.isEmpty {
+            info += "\nНе удалось перенести: \(report.failed.count) файлов. Подробности в логе."
+        }
+        alert.informativeText = info
+        alert.alertStyle = report.failed.isEmpty ? .informational : .warning
+        alert.runModal()
+    }
+
+    private func formatBytes(_ bytes: Int64) -> String {
+        let units = ["B", "KB", "MB", "GB"]
+        var value = Double(bytes)
+        var idx = 0
+        while value >= 1024, idx < units.count - 1 {
+            value /= 1024
+            idx += 1
+        }
+        return String(format: "%.1f %@", value, units[idx])
     }
 
     private func rediscover() {

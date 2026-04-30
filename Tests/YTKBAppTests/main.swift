@@ -9,6 +9,7 @@ func runAll() {
     TestHarness.suite("MarkdownRenderer", markdownTests)
     TestHarness.suite("RetryProcessor", retryProcessorTests)
     TestHarness.suite("ChannelResolver", channelResolverTests)
+    TestHarness.suite("KBMigrator", migratorTests)
     exit(Int32(TestHarness.summary()))
 }
 

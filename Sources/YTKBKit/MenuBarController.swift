@@ -100,4 +100,24 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
             popover.contentViewController?.view.window?.makeKey()
         }
     }
+
+    /// Programmatically open the popover (called from notification click).
+    package func showPopover() {
+        guard let button = statusItem.button else { return }
+        if !popover.isShown {
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            popover.contentViewController?.view.window?.makeKey()
+        }
+    }
+
+    // MARK: - NSPopoverDelegate
+
+    func popoverWillShow(_ notification: Notification) {
+        appState.isPopoverOpen = true
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        appState.isPopoverOpen = false
+        appState.focusChannelURL = nil
+    }
 }

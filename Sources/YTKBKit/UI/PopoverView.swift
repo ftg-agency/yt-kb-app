@@ -13,6 +13,9 @@ struct PopoverView: View {
             header
             Divider()
             kbPathRow
+            if !appState.kbDirectoryAvailable {
+                kbWarningBanner
+            }
             Divider()
             channelSection
             Divider()
@@ -25,6 +28,29 @@ struct PopoverView: View {
         .onReceive(appState.$lastError) { err in
             pollErrorMessage = err
         }
+        .onAppear {
+            appState.refreshKBAvailability()
+        }
+    }
+
+    private var kbWarningBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("База знаний недоступна")
+                    .font(.callout)
+                    .fontWeight(.medium)
+                Text("Папка не найдена — возможно отключён внешний диск. Поллинг приостановлен.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.orange.opacity(0.1))
     }
 
     private var header: some View {
@@ -92,25 +118,41 @@ struct PopoverView: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 12)
             } else {
-                ScrollView {
-                    VStack(spacing: 0) {
-                        ForEach(appState.channelStore.channels) { channel in
-                            ChannelRowView(
-                                channel: channel,
-                                isPollingThis: appState.pollingChannelURL == channel.url,
-                                onPollOnly: { Task { await PollingCoordinator.shared.pollOne(channel: channel, appState: appState) } },
-                                onToggleEnabled: {
-                                    var updated = channel
-                                    updated.enabled.toggle()
-                                    appState.channelStore.updateChannel(updated)
-                                },
-                                onRemove: { appState.channelStore.removeChannel(url: channel.url) },
-                                onOpenFolder: { openChannelFolder(channel: channel) }
-                            )
+                ScrollViewReader { scrollProxy in
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            ForEach(appState.channelStore.channels) { channel in
+                                ChannelRowView(
+                                    channel: channel,
+                                    isPollingThis: appState.pollingChannelURL == channel.url,
+                                    isFocused: appState.focusChannelURL == channel.url,
+                                    onPollOnly: { Task { await PollingCoordinator.shared.pollOne(channel: channel, appState: appState) } },
+                                    onToggleEnabled: {
+                                        var updated = channel
+                                        updated.enabled.toggle()
+                                        appState.channelStore.updateChannel(updated)
+                                    },
+                                    onRemove: { appState.channelStore.removeChannel(url: channel.url) },
+                                    onOpenFolder: { openChannelFolder(channel: channel) }
+                                )
+                                .id(channel.url)
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 220)
+                    .onChange(of: appState.focusChannelURL) { newValue in
+                        if let url = newValue {
+                            withAnimation {
+                                scrollProxy.scrollTo(url, anchor: .center)
+                            }
+                        }
+                    }
+                    .onAppear {
+                        if let url = appState.focusChannelURL {
+                            scrollProxy.scrollTo(url, anchor: .center)
                         }
                     }
                 }
-                .frame(maxHeight: 220)
             }
 
             if let err = pollErrorMessage {
@@ -144,7 +186,7 @@ struct PopoverView: View {
                     .frame(maxWidth: .infinity)
                 }
                 .keyboardShortcut("r", modifiers: .command)
-                .disabled(appState.isPolling || appState.channelStore.channels.isEmpty)
+                .disabled(appState.isPolling || appState.channelStore.channels.isEmpty || !appState.kbDirectoryAvailable)
             }
 
             Button {

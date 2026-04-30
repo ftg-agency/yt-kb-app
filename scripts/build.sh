@@ -59,6 +59,9 @@ cp "$EXEC_PATH" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 chmod +x "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 cp "$ROOT/vendored/yt-dlp" "$APP_BUNDLE/Contents/Resources/yt-dlp"
 chmod +x "$APP_BUNDLE/Contents/Resources/yt-dlp"
+# Anti-tamper: write SHA256 of the bundled binary so the app can verify it on launch
+shasum -a 256 "$APP_BUNDLE/Contents/Resources/yt-dlp" | awk '{print $1}' > "$APP_BUNDLE/Contents/Resources/yt-dlp.sha256"
+echo "  yt-dlp sha256: $(cat "$APP_BUNDLE/Contents/Resources/yt-dlp.sha256")"
 cp "$ROOT/Resources/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 
 printf 'APPL????' > "$APP_BUNDLE/Contents/PkgInfo"
