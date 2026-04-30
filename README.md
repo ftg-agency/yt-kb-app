@@ -5,16 +5,16 @@ YouTube → Markdown база знаний. Скачивает субтитры 
 AI-инструментом.
 
 Это нативное Swift-приложение (не Electron, не Python), живёт в menu bar,
-без иконки в Dock. Phase 1 (MVP).
+без иконки в Dock.
 
 ## Установка
 
 ### Вариант 1 — готовый DMG (рекомендуется)
 
-1. Скачать `YTKB.dmg` со страницы [Releases](../../releases).
+1. Скачать `YTKB.dmg` со страницы [Releases](../../releases/latest).
 2. Открыть `.dmg`, перетащить `YTKB.app` в `/Applications`.
-3. **Снять карантин** (приложение пока не подписано Apple Developer ID, поэтому
-   Gatekeeper его блокирует по умолчанию):
+3. **Снять карантин** (приложение ad-hoc подписано, без Apple Developer ID,
+   поэтому Gatekeeper его блокирует по умолчанию):
    ```bash
    xattr -dr com.apple.quarantine /Applications/YTKB.app
    ```
@@ -43,14 +43,67 @@ cd yt-kb-app
      `~/Documents/yt-kbs`).
    - **Шаг 2.** Выбрать браузер для cookies (по умолчанию Chrome). YouTube
      требует cookies, иначе быстро включает bot-detection.
-   - **Шаг 3.** Готово.
+   - **Шаг 3.** Если в выбранной папке уже есть скачанные ранее каналы —
+     приложение их найдёт и предложит добавить на отслеживание.
 3. Кликнуть на иконку в menu bar → **+ Добавить канал** → вставить URL
    (`https://www.youtube.com/@handle`) → **Проверить URL** → **Добавить**.
-4. Нажать **⟳ Проверить сейчас** → начнётся скачивание субтитров для всех
-   видео канала, которых ещё нет в базе.
+4. Дальше каналы будут опрашиваться автоматически (по умолчанию каждые 3
+   часа). Чтобы запустить опрос немедленно — **⟳ Проверить сейчас**.
 
 При первом запросе с cookies из Chrome macOS попросит разрешение на доступ
 к ключам "Chrome Safe Storage" — нажмите **"Разрешать всегда"**.
+
+## Что внутри
+
+### Pipeline
+
+- **Каскадный fetch_metadata (3 уровня)**: simple call → drop cookies
+  при format error или пустых сабах с cookies → aggressive
+  (`--extractor-args player_client=web_safari,web,android` + permissive `-f`)
+- **Каскадный _download_subs (3 уровня)** по той же схеме
+- **Subtitle priority planner**: настраиваемый, по умолчанию
+  оригинальный язык → английский → любой; для каждого языка пробуются
+  и authrn-subs, и manual-subs
+- **3 формата субтитров**: VTT (regex parser), SRV3 (XMLParser), JSON3
+  (JSONDecoder); общий dedup для rolling auto-captions
+- **Markdown rendering**: YAML frontmatter (title, channel, video_id,
+  url, published, duration, view_count, language, source) + H1 + meta-блок
+  + опциональный `<details>` description + `## Транскрипт` чанками по 150 сек
+  с кликабельными `?t=Xs` ссылками обратно на YouTube
+- **index.md**: per-channel оглавление, регенерируется на каждое новое видео,
+  сортировка по дате DESC, header с counters/views
+- **Idempotency**: pre-scan KB-дерева по regex `-([\w-]{11})\.md$`
+  исключает уже скачанные видео ДО любых yt-dlp вызовов
+
+### Background polling
+
+- `NSBackgroundActivityScheduler` с атомарным `isPolling` guard
+- Configurable интервал: 1 / 3 / 6 / 24 часа
+- Quiet hours (опционально, диапазон HH:MM)
+- Manual reload через `⌘R` или кнопку — параллельно scheduled polling
+  не запускается
+
+### Retry queue
+
+- Видео без сабов попадают в queue, повторно проверяются каждые 6+ часов
+- Максимум 7 попыток за 7 дней; после этого — `permanent_no_subs`,
+  больше не пробуется но остаётся видим в UI
+- Это нужно потому что YouTube auto-captions появляются НЕ сразу после
+  публикации видео — иногда через сутки
+
+### Notifications
+
+- На каждый scheduled poll с N>0 новыми видео: "yt-kb: скачано N
+  транскриптов"
+- На ошибку поллинга канала впервые
+- На bot-check (Sign in to confirm) — критичная
+
+### State storage
+
+- Список каналов + retry queue: `~/Library/Application Support/yt-kb/state.json`
+- Настройки: `UserDefaults` (`io.yt-kb.app`), включая security-scoped
+  bookmark на KB-папку (переживает relaunch)
+- Логи: `~/Library/Logs/yt-kb/yt-kb.log`
 
 ## Что получите на выходе
 
@@ -62,87 +115,63 @@ cd yt-kb-app
     └── ...
 ```
 
-Каждый `.md` содержит YAML-frontmatter (название, канал, URL, дата,
-просмотры, язык) и транскрипт автосабов с кликабельными таймкодами обратно
-на YouTube, разбитый на блоки по ~2.5 минуты.
-
-## Идемпотентность
-
-Перезапуск poll'а на том же канале безопасен — приложение сначала сканирует
-всю базу и пропускает уже скачанные видео БЕЗ обращения к YouTube. Это
-определяется по 11-символьному video_id в имени файла.
-
-## Логи
-
-Пишутся в `~/Library/Logs/yt-kb/yt-kb.log`. Открыть напрямую:
-
-```bash
-tail -f ~/Library/Logs/yt-kb/yt-kb.log
-# или
-open ~/Library/Logs/yt-kb/yt-kb.log
-```
-
-## State
-
-Список отслеживаемых каналов и retry queue хранятся в JSON:
-`~/Library/Application Support/yt-kb/state.json`.
-
-Настройки (KB-папка через security-scoped bookmark, выбор браузера, sleep
-между запросами) — в `UserDefaults` (`io.yt-kb.app`).
-
-## Phase 1 → Phase 2
-
-Это **MVP**. Что НЕ реализовано в Phase 1 и идёт на следующие фазы:
-
-- **Phase 2** — каскад из 3 уровней при fetch_metadata и download_subs (для
-  редких видео с проблемными форматами); SRV3/JSON3 парсеры (сейчас только
-  VTT); background polling по расписанию через `NSBackgroundActivityScheduler`;
-  retry queue для видео без сабов; нативные нотификации;
-  channel auto-discovery из существующей KB.
-- **Phase 3** — анимация menu bar иконки в polling-state, drag-and-drop
-  language priority, quiet hours, расширенные настройки.
-- **Phase 4** — codesigning с Developer ID, App Sandbox, notarization через
-  `notarytool`, GitHub Actions CI/CD.
-
-## Известные ограничения Phase 1
-
-- **App Sandbox выключен.** Embedded `yt-dlp` (PyInstaller-bundle) не работает
-  под sandbox без сложных entitlements или extraction в venv. Sandbox +
-  notarization планируются в Phase 4.
-- **Только arm64.** Universal-сборка (arm64 + x86_64) на Command Line Tools
-  без Xcode.app может падать на этапе линковки x86_64; build script
-  автоматически фолбэчит на arm64-only. Для Intel-Маков пока не подходит.
-- **Только VTT.** Если YouTube вернёт субтитры в `srv3`/`json3` без VTT —
-  приложение покажет 0 сегментов. На практике VTT почти всегда доступен;
-  SRV3/JSON3 парсеры в Phase 2.
-- **Только Layer 1 yt-dlp.** Если простой вызов yt-dlp падает с
-  "Requested format is not available" — Phase 1 не делает фолбэков.
-- **Поллинг только вручную** (через "⟳ Проверить сейчас"). Background
-  scheduler — Phase 2.
-
 ## Архитектура
 
 ```
 Sources/YTKBApp/
-├── AppEntry.swift                    # @main, NSApplication setup
-├── AppDelegate.swift                 # NSApplicationDelegate
-├── MenuBarController.swift           # NSStatusItem + NSPopover
-├── Logger.swift                      # ~/Library/Logs/yt-kb/yt-kb.log
-├── UI/                               # SwiftUI views
-├── State/                            # AppState, ChannelStore, Settings
-├── YTDLP/                            # subprocess wrapper, metadata, downloader, resolver
-├── Subs/                             # SubsPlanner, VTTParser
-├── Markdown/                         # Renderer, ChannelIndexBuilder, Slugify
-├── KB/                               # FileNaming, KBScanner (idempotency pre-scan)
-└── Polling/                          # PollOperation, PollingCoordinator (singleton actor)
+├── AppEntry.swift                    @main, NSApplication setup
+├── AppDelegate.swift                 NSApplicationDelegate
+├── MenuBarController.swift           NSStatusItem + NSPopover + pulse anim
+├── Logger.swift                      ~/Library/Logs/yt-kb/yt-kb.log
+├── UI/                               SwiftUI views (popover, settings, onboarding)
+├── State/                            AppState, ChannelStore, Settings (UserDefaults)
+├── YTDLP/                            Process wrapper, metadata, subs, channel resolver
+│   ├── YTDLPRunner.swift             actor — async subprocess wrapper
+│   ├── MetadataFetcher.swift         3-layer cascade
+│   ├── SubsDownloader.swift          3-layer cascade
+│   └── ChannelResolver.swift         --flat-playlist + 11-char filter + nested recurse
+├── Subs/                             SubsPlanner, VTT/SRV3/JSON3 parsers
+├── Markdown/                         Renderer, ChannelIndexBuilder, Slugify
+├── KB/                               FileNaming, KBScanner (idempotency), AutoDiscovery
+└── Polling/
+    ├── PollingScheduler.swift        NSBackgroundActivityScheduler integration
+    ├── PollingCoordinator.swift      singleton actor — atomic isPolling guard
+    ├── PollOperation.swift           one channel cycle; report with counters + retry mutations
+    ├── RetryProcessor.swift          backoff/permanent rules
+    └── NotificationsService.swift    UNUserNotificationCenter wrapper
 ```
 
-## Reference
+## Известные ограничения
 
-Phase 1 — порт CLI-скрипта `yt-kb.py` (Python, ~1200 строк) на Swift. CLI
-по-прежнему в `~/Desktop/yt-kbs/yt-kb.py` — все behavioural инварианты
-сохраняются: каскадные стратегии, planner приоритетов, dedup rolling
-captions, frontmatter, slugify правила.
+- **App Sandbox выключен.** Embedded `yt-dlp` (PyInstaller-bundle) не работает
+  под sandbox без либо сложных entitlements (`disable-library-validation` +
+  `allow-unsigned-executable-memory`), либо extraction в venv. Sandbox +
+  notarization планируются вместе с Developer ID code signing.
+- **arm64-only DMG.** Universal-сборка (arm64 + x86_64) на Command Line Tools
+  без Xcode.app падает на этапе линковки x86_64; build script автоматически
+  фолбэчит на arm64-only. Для Intel-Маков нужен Xcode.app или GitHub Actions
+  с macOS-runner — в planning.
+- **Не подписано Developer ID.** Только ad-hoc codesign. Gatekeeper
+  блокирует первый запуск; нужен `xattr -dr com.apple.quarantine`.
+
+## Логи и troubleshooting
+
+```bash
+tail -f ~/Library/Logs/yt-kb/yt-kb.log
+# или открыть в Console.app:
+open ~/Library/Logs/yt-kb/yt-kb.log
+```
+
+**Все видео в `no_subs`** — у канала автосабов на языке оригинала может не
+быть. Поправь Settings → Дополнительно → "Приоритет языков субтитров",
+добавь `@english` или конкретный код языка наверх списка.
+
+**bot-check (Sign in to confirm)** — Chrome не залогинен в YouTube или
+cookies протухли. Залогинься в Chrome, попробуй снова. Или поменяй
+Settings → Базовые → Браузер на Safari/Firefox/Brave.
+
+**Safari как источник cookies** — приложению нужно дать Full Disk Access
+(System Settings → Privacy & Security → Full Disk Access → +YTKB.app).
 
 ## License
 
