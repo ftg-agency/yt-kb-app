@@ -92,6 +92,11 @@ hdiutil create \
     -format UDBZ \
     "$DMG_OUT" >/dev/null
 
+# Tidy up: staging dir is a temporary copy of the bundle used only as the DMG
+# source. Leaving it around makes Spotlight index it as a separate app
+# alongside dist/YTKB.app.
+rm -rf "$STAGING"
+
 echo
 echo "==> Done"
 echo "  app:  $APP_BUNDLE"
