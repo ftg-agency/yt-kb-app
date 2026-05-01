@@ -30,7 +30,6 @@ final class UpdateInstaller {
     /// script takes over.
     package func install(
         update: AppUpdate,
-        token: String?,
         progress: @MainActor @escaping (Progress) -> Void
     ) async throws {
         guard !isInstalling else { return }
@@ -41,7 +40,7 @@ final class UpdateInstaller {
         progress(Progress(phase: "Скачиваю DMG…", fraction: -1))
         let tmpDMG = FileManager.default.temporaryDirectory
             .appendingPathComponent("ytkb-update-\(UUID().uuidString).dmg")
-        let req = await UpdateChecker.shared.authenticatedAssetURLRequest(for: update, token: token)
+        let req = URLRequest(url: update.assetURL)
         let (downloadURL, response) = try await URLSession.shared.download(for: req)
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             throw UpdateError.install("DMG download HTTP error")

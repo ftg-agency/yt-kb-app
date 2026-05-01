@@ -1,25 +1,15 @@
 import Foundation
 
 package enum FileNaming {
-    /// channel-slug-<6-char-id-suffix>
+    /// channel-slug (clean kebab-case, no id suffix).
     package static func channelDirName(meta: VideoMetadata) -> String {
         let name = meta.displayChannel.isEmpty ? "unknown-channel" : meta.displayChannel
-        let baseSlug = Slugify.slug(name)
-        if let cid = meta.displayChannelId, !cid.isEmpty {
-            let suffix = String(Slugify.slug(cid).suffix(6))
-            return "\(baseSlug)-\(suffix)"
-        }
-        return baseSlug
+        return Slugify.slug(name)
     }
 
     /// `channelDirName` for a resolved channel — used at "Add channel" time.
     static func channelDirName(resolved: ResolvedChannel) -> String {
-        let baseSlug = Slugify.slug(resolved.name.isEmpty ? "unknown-channel" : resolved.name)
-        if let cid = resolved.channelId, !cid.isEmpty {
-            let suffix = String(Slugify.slug(cid).suffix(6))
-            return "\(baseSlug)-\(suffix)"
-        }
-        return baseSlug
+        Slugify.slug(resolved.name.isEmpty ? "unknown-channel" : resolved.name)
     }
 
     /// <YYYY-MM-DD>-<title-slug>-<11charid>.md
