@@ -16,7 +16,7 @@ permissions:
 jobs:
   build:
     runs-on: macos-15
-    timeout-minutes: 25
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -31,10 +31,44 @@ jobs:
       - name: Run unit tests
         run: swift run YTKBAppTests
 
+      - name: Import signing certificate
+        env:
+          CERT_B64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          P12_PASS: ${{ secrets.MACOS_CERT_P12_PASSWORD }}
+          KC_PASS: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+        run: |
+          CERT="$RUNNER_TEMP/cert.p12"
+          KC="$RUNNER_TEMP/build.keychain-db"
+          echo -n "$CERT_B64" | base64 --decode -o "$CERT"
+          security create-keychain -p "$KC_PASS" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KC_PASS" "$KC"
+          security import "$CERT" -P "$P12_PASS" -A -t cert -f pkcs12 -k "$KC"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KC_PASS" "$KC"
+          security list-keychain -d user -s "$KC" $(security list-keychains -d user | xargs)
+          security find-identity -v -p codesigning
+
       - name: Build & package DMG
         env:
-          SKIP_TESTS: "1"  # already ran above; build.sh skips tests when set
+          SKIP_TESTS: "1"
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
         run: ./scripts/build.sh
+
+      - name: Sign, notarize and staple DMG
+        env:
+          SIGN_ID: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASS: ${{ secrets.APPLE_ID_PASSWORD }}
+          TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          codesign --force --sign "$SIGN_ID" --timestamp dist/YTKB.dmg
+          xcrun notarytool submit dist/YTKB.dmg \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_PASS" \
+              --team-id "$TEAM_ID" \
+              --wait
+          xcrun stapler staple dist/YTKB.dmg
+          spctl -a -t open --context context:primary-signature -v dist/YTKB.dmg
 
       - name: Upload DMG artifact (workflow run)
         uses: actions/upload-artifact@v4
@@ -48,7 +82,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Create a release if it doesn't exist; either way, attach the DMG.
           tag="${GITHUB_REF##*/}"
           if ! gh release view "$tag" >/dev/null 2>&1; then
             gh release create "$tag" --title "$tag" --notes "Automated release. See README for install instructions."

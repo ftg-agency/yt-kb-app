@@ -72,10 +72,24 @@ cp "$ROOT/Resources/AppIcon.icns" "$WORK_APP/Contents/Resources/AppIcon.icns"
 printf 'APPL????' > "$WORK_APP/Contents/PkgInfo"
 echo "  bundle assembled at $WORK_APP"
 
-echo "==> Step 6: ad-hoc codesign (in /tmp, no iCloud File Provider)"
+echo "==> Step 6: codesign (Developer ID + hardened runtime, fallback to ad-hoc)"
 xattr -cr "$WORK_APP"
-codesign --force --deep --sign - "$WORK_APP"
-codesign --verify --verbose=2 "$WORK_APP"
+SIGN_ID="${MACOS_SIGNING_IDENTITY:-}"
+if [[ -z "$SIGN_ID" ]]; then
+    echo "  no MACOS_SIGNING_IDENTITY — ad-hoc signing (local dev)"
+    codesign --force --deep --sign - "$WORK_APP"
+else
+    echo "  signing nested binary: yt-dlp"
+    codesign --force --options runtime --timestamp \
+        --sign "$SIGN_ID" \
+        "$WORK_APP/Contents/Resources/yt-dlp"
+    echo "  signing bundle with entitlements"
+    codesign --force --options runtime --timestamp \
+        --entitlements "$ROOT/entitlements.plist" \
+        --sign "$SIGN_ID" \
+        "$WORK_APP"
+fi
+codesign --verify --strict --verbose=2 "$WORK_APP"
 
 echo "==> Step 7: build DMG with custom layout"
 # Stage: app + Applications symlink + hidden background image

@@ -71,9 +71,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency
                 self?.appState.checkForUpdate()
             }
             updateCheckTimer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
-                guard let self else { return }
-                if self.appState.settings.autoUpdateEnabled {
-                    self.appState.checkForUpdate()
+                Task { @MainActor in
+                    guard let self else { return }
+                    if self.appState.settings.autoUpdateEnabled {
+                        self.appState.checkForUpdate()
+                    }
                 }
             }
         }
