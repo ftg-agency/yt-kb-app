@@ -4,8 +4,7 @@ import Foundation
 package struct AppUpdate: Equatable, Sendable {
     package let version: String           // "1.6.0" (no "v" prefix)
     package let tag: String               // "v1.6.0" — used for download asset URL
-    package let assetURL: URL             // DMG download URL (may need auth header)
-    package let assetId: Int              // GitHub asset id (for private-repo authenticated download)
+    package let assetURL: URL             // DMG download URL (browser_download_url)
     package let assetName: String         // "YTKB.dmg"
     package let releaseURL: URL           // human-readable release page
     package let releaseNotes: String      // body of the GitHub release
@@ -23,16 +22,11 @@ actor UpdateChecker {
 
     /// Fetch the latest release; return AppUpdate if it's strictly newer than
     /// the running CFBundleShortVersionString. Returns nil otherwise.
-    /// `token` is a GitHub Personal Access Token (PAT) — required for private
-    /// repos. Public repos work without a token (with API rate limits).
-    package func checkLatest(token: String?) async throws -> AppUpdate? {
+    package func checkLatest() async throws -> AppUpdate? {
         let url = URL(string: "https://api.github.com/repos/\(owner)/\(repo)/releases/latest")!
         var req = URLRequest(url: url)
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         req.setValue("yt-kb-app/\(currentVersion)", forHTTPHeaderField: "User-Agent")
-        if let token = token, !token.isEmpty {
-            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
 
         let (data, response) = try await URLSession.shared.data(for: req)
         guard let http = response as? HTTPURLResponse else {
@@ -42,12 +36,7 @@ actor UpdateChecker {
             throw UpdateError.network("404 — репозиторий не найден.")
         }
         if http.statusCode == 403 {
-            // Most likely anonymous-rate-limit (60 req/h per IP). Surface a
-            // hint to add a token for 5000/h.
-            throw UpdateError.network("403 — превышен rate limit. Добавьте GitHub Token в Settings (5000 req/h вместо 60).")
-        }
-        if http.statusCode == 401 {
-            throw UpdateError.network("401 — токен невалиден.")
+            throw UpdateError.network("403 — превышен GitHub rate limit, попробуйте позже.")
         }
         guard (200...299).contains(http.statusCode) else {
             throw UpdateError.network("HTTP \(http.statusCode)")
@@ -70,7 +59,6 @@ actor UpdateChecker {
         // Find the .dmg asset
         let assets = (json["assets"] as? [[String: Any]]) ?? []
         guard let dmg = assets.first(where: { ($0["name"] as? String)?.hasSuffix(".dmg") ?? false }),
-              let assetId = dmg["id"] as? Int,
               let assetName = dmg["name"] as? String,
               let downloadURLString = dmg["browser_download_url"] as? String,
               let downloadURL = URL(string: downloadURLString) else {
@@ -85,28 +73,10 @@ actor UpdateChecker {
             version: version,
             tag: tag,
             assetURL: downloadURL,
-            assetId: assetId,
             assetName: assetName,
             releaseURL: releaseURL,
             releaseNotes: releaseNotes
         )
-    }
-
-    /// Builds the authenticated asset download URL. For private repos
-    /// browser_download_url returns 404 anonymously; the API endpoint
-    /// `/releases/assets/<id>` with `Accept: octet-stream` redirects to a
-    /// time-limited signed URL.
-    package func authenticatedAssetURLRequest(for update: AppUpdate, token: String?) -> URLRequest {
-        if let token = token, !token.isEmpty {
-            let api = URL(string: "https://api.github.com/repos/\(owner)/\(repo)/releases/assets/\(update.assetId)")!
-            var req = URLRequest(url: api)
-            req.setValue("application/octet-stream", forHTTPHeaderField: "Accept")
-            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            req.setValue("yt-kb-app/\(currentVersion)", forHTTPHeaderField: "User-Agent")
-            return req
-        } else {
-            return URLRequest(url: update.assetURL)
-        }
     }
 
     private var currentVersion: String {

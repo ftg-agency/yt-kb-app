@@ -91,21 +91,6 @@ final class Settings: ObservableObject {
     /// User can also trigger a manual check via Settings → О приложении.
     @Published var autoUpdateEnabled: Bool = true
 
-    /// GitHub Personal Access Token (read from Keychain). Required for
-    /// private-repo update checks. Stored separately from UserDefaults.
-    var githubToken: String? {
-        get { Keychain.load(account: "github_pat") }
-    }
-    func setGitHubToken(_ value: String) {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            Keychain.delete(account: "github_pat")
-        } else {
-            Keychain.save(trimmed, account: "github_pat")
-        }
-        objectWillChange.send()
-    }
-
     func load() {
         if let raw = defaults.string(forKey: Keys.browser),
            let choice = BrowserChoice(rawValue: raw) {

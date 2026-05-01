@@ -29,6 +29,8 @@ struct SettingsView: View {
     }
 
     @State private var selection: SettingsSection = .general
+    @State private var showKBImportInfo: Bool = false
+    @State private var showJSONImportInfo: Bool = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -345,10 +347,36 @@ struct SettingsView: View {
                 LanguagePriorityList(appState: appState)
             }
             Section("Импорт / экспорт") {
-                Button("Импортировать каналы из существующей KB-папки") { rediscover() }
+                HStack {
+                    Button("Импортировать каналы из существующей KB-папки") { rediscover() }
+                    Button {
+                        showKBImportInfo.toggle()
+                    } label: {
+                        Image(systemName: "info.circle")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                    .popover(isPresented: $showKBImportInfo, arrowEdge: .top) {
+                        kbImportInfoPopover
+                    }
+                    Spacer()
+                }
                 Button("Экспортировать список каналов в JSON…") { exportChannels() }
                     .disabled(appState.channelStore.channels.isEmpty)
-                Button("Импортировать каналы из JSON…") { importChannels() }
+                HStack {
+                    Button("Импортировать каналы из JSON…") { importChannels() }
+                    Button {
+                        showJSONImportInfo.toggle()
+                    } label: {
+                        Image(systemName: "info.circle")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                    .popover(isPresented: $showJSONImportInfo, arrowEdge: .top) {
+                        jsonImportInfoPopover
+                    }
+                    Spacer()
+                }
             }
             if !appState.channelStore.retryQueue.isEmpty {
                 Section("Retry-очередь") {
@@ -534,49 +562,74 @@ struct SettingsView: View {
                 Button("Проверить сейчас") {
                     appState.checkForUpdate(manual: true)
                 }
-                if let update = appState.availableUpdate {
+                .disabled(appState.isCheckingUpdate)
+                if appState.isCheckingUpdate {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Проверяю обновления…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if let update = appState.availableUpdate {
                     Text("Доступна версия \(update.version)")
                         .font(.caption)
                         .foregroundStyle(.green)
-                } else if appState.updateCheckError != nil {
-                    Text(appState.updateCheckError ?? "")
+                } else if let error = appState.updateCheckError {
+                    Text(error)
                         .font(.caption)
                         .foregroundStyle(.red)
                         .lineLimit(2)
+                } else if let checkedAt = appState.lastUpdateCheckAt {
+                    Text("Версия \(appVersion) — актуальная (проверено: \(Self.timeFormatter.string(from: checkedAt)))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 } else {
                     Text("Версия \(appVersion) — актуальная")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
-
-            DisclosureGroup("GitHub Token (необязательно)") {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        SecureField("paste PAT", text: tokenBinding)
-                            .textFieldStyle(.roundedBorder)
-                            .frame(maxWidth: 320)
-                        if appState.settings.githubToken != nil {
-                            Image(systemName: "checkmark.seal.fill")
-                                .foregroundStyle(.green)
-                                .help("Токен сохранён в Keychain")
-                        }
-                    }
-                    Text("Без токена работает 60 запросов/час с одного IP (хватает с запасом). Токен снимает лимит до 5000/ч и нужен только если ты живёшь за NAT с десятком других пользователей yt-kb. Любой fine-grained PAT без специальных прав подойдёт.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.top, 4)
-            }
-            .font(.caption)
         }
     }
 
-    private var tokenBinding: Binding<String> {
-        Binding(
-            get: { appState.settings.githubToken ?? "" },
-            set: { appState.settings.setGitHubToken($0) }
-        )
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.timeStyle = .short
+        f.dateStyle = .none
+        return f
+    }()
+
+    private var kbImportInfoPopover: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Формат KB-папки").font(.headline)
+            Text("Сканирует выбранную папку и подхватывает каналы из подпапок верхнего уровня.")
+                .font(.caption)
+            Text("На канал нужно минимум одно `.md`-видео. Чтобы определить имя и URL, приложение читает либо `index.md` (`# Имя канала` + строка `**Канал:** <url>`), либо YAML-frontmatter в любом видеофайле канала с полями `channel:` и `channel_url:`.")
+                .font(.caption)
+            Text("Имя самой подпапки роли не играет — метаданные читаются изнутри файлов, поэтому папки, оставшиеся от прежних версий, тоже подхватятся.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(12)
+        .frame(width: 360, alignment: .leading)
+    }
+
+    private var jsonImportInfoPopover: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Формат JSON").font(.headline)
+            Text("Файл — массив объектов. Поля каждого:")
+                .font(.caption)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("• `url` — URL канала на YouTube (обязательно)").font(.caption)
+                Text("• `name` — отображаемое имя (обязательно)").font(.caption)
+                Text("• `channel_id` — ID канала `UCxxxxx…` (опционально)").font(.caption)
+                Text("• `enabled` — bool, по умолчанию `true` (опционально)").font(.caption)
+            }
+            Text("Дубликаты по `url` пропускаются. Формат симметричен с экспортом — выгрузить пример можно через «Экспортировать список каналов в JSON…».")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(12)
+        .frame(width: 360, alignment: .leading)
     }
 
     private var appVersion: String {
@@ -773,53 +826,66 @@ struct SettingsView: View {
 private struct LanguagePriorityList: View {
     @ObservedObject var appState: AppState
     @State private var selectedCode: String = ""
+    @State private var draggingToken: String? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(appState.settings.languagePriority.enumerated()), id: \.offset) { idx, token in
-                HStack(spacing: 6) {
-                    Text("\(idx + 1).")
-                        .foregroundStyle(.secondary)
-                        .frame(width: 24, alignment: .trailing)
-                    Text(displayName(for: token))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Button {
-                        moveUp(idx)
-                    } label: { Image(systemName: "chevron.up") }
-                        .buttonStyle(.borderless)
-                        .disabled(idx == 0)
-                    Button {
-                        moveDown(idx)
-                    } label: { Image(systemName: "chevron.down") }
-                        .buttonStyle(.borderless)
-                        .disabled(idx == appState.settings.languagePriority.count - 1)
-                    Button {
-                        remove(idx)
-                    } label: { Image(systemName: "minus.circle") }
-                        .buttonStyle(.borderless)
-                        .disabled(appState.settings.languagePriority.count <= 1)
-                }
-                .padding(.vertical, 2)
+            ForEach(Array(appState.settings.languagePriority.enumerated()), id: \.element) { idx, token in
+                row(idx: idx, token: token)
             }
             Divider().padding(.vertical, 4)
-            VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
                 Text("Добавить язык")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                HStack(spacing: 8) {
-                    Picker("", selection: $selectedCode) {
-                        Text("— выберите язык —").tag("")
-                        ForEach(availableLanguages) { lang in
-                            Text(lang.displayName).tag(lang.code)
-                        }
+                Picker("", selection: $selectedCode) {
+                    Text("Выберите язык").tag("")
+                    ForEach(availableLanguages) { lang in
+                        Text(lang.displayName).tag(lang.code)
                     }
-                    .labelsHidden()
-                    .frame(maxWidth: .infinity)
-                    Button("Добавить") { addSelected() }
-                        .disabled(selectedCode.isEmpty)
                 }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(minWidth: 220, maxWidth: .infinity)
+                Button("Добавить") { addSelected() }
+                    .disabled(selectedCode.isEmpty)
             }
         }
+    }
+
+    @ViewBuilder
+    private func row(idx: Int, token: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "line.3.horizontal")
+                .foregroundStyle(.secondary)
+                .help("Перетащите для изменения порядка")
+            Text("\(idx + 1).")
+                .foregroundStyle(.secondary)
+                .frame(width: 24, alignment: .trailing)
+            Text(displayName(for: token))
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button {
+                remove(idx)
+            } label: { Image(systemName: "minus.circle") }
+                .buttonStyle(.borderless)
+                .disabled(appState.settings.languagePriority.count <= 1)
+        }
+        .padding(.vertical, 2)
+        .contentShape(Rectangle())
+        .opacity(draggingToken == token ? 0.4 : 1.0)
+        .onDrag {
+            draggingToken = token
+            return NSItemProvider(object: token as NSString)
+        }
+        .onDrop(
+            of: [.text],
+            delegate: LanguageDropDelegate(
+                target: token,
+                dragging: $draggingToken,
+                list: appState.settings.languagePriority,
+                commit: { appState.settings.setLanguagePriority($0) }
+            )
+        )
     }
 
     /// Languages from the curated list that aren't already in the priority chain.
@@ -847,24 +913,38 @@ private struct LanguagePriorityList: View {
         }
     }
 
-    private func moveUp(_ idx: Int) {
-        guard idx > 0 else { return }
-        var list = appState.settings.languagePriority
-        list.swapAt(idx, idx - 1)
-        appState.settings.setLanguagePriority(list)
-    }
-
-    private func moveDown(_ idx: Int) {
-        var list = appState.settings.languagePriority
-        guard idx < list.count - 1 else { return }
-        list.swapAt(idx, idx + 1)
-        appState.settings.setLanguagePriority(list)
-    }
-
     private func remove(_ idx: Int) {
         var list = appState.settings.languagePriority
         guard list.count > 1 else { return }
         list.remove(at: idx)
         appState.settings.setLanguagePriority(list)
+    }
+}
+
+private struct LanguageDropDelegate: DropDelegate {
+    let target: String
+    @Binding var dragging: String?
+    let list: [String]
+    let commit: ([String]) -> Void
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func dropEntered(info: DropInfo) {
+        guard let source = dragging, source != target,
+              let from = list.firstIndex(of: source),
+              let to = list.firstIndex(of: target) else { return }
+        var newList = list
+        newList.remove(at: from)
+        newList.insert(source, at: to)
+        withAnimation(.easeInOut(duration: 0.15)) {
+            commit(newList)
+        }
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        dragging = nil
+        return true
     }
 }

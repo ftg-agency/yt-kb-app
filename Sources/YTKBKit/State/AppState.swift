@@ -75,6 +75,16 @@ final class AppState: ObservableObject {
     /// Last error from a manual or scheduled update check, surfaced in Settings.
     @Published var updateCheckError: String?
 
+    /// True while a release-check request is in flight; drives the spinner
+    /// next to "Проверить сейчас" so the user gets feedback that something
+    /// is happening even when the app is already on the latest version.
+    @Published var isCheckingUpdate: Bool = false
+
+    /// Wall-clock timestamp of the last completed release check (success or
+    /// failure). Settings shows "проверено: HH:mm" so the user knows the
+    /// "Версия актуальная" text reflects a real check, not a stale default.
+    @Published var lastUpdateCheckAt: Date?
+
     /// Set by AppDelegate after scheduler is constructed.
     var scheduler: PollingScheduler?
 
@@ -152,18 +162,23 @@ final class AppState: ObservableObject {
     /// on success (if newer than current). Also sets `updateCheckError` on
     /// failure for surfacing in Settings.
     func checkForUpdate(manual: Bool = false) {
-        let token = settings.githubToken
+        guard !isCheckingUpdate else { return }
+        isCheckingUpdate = true
         Task { [weak self] in
             do {
-                let update = try await UpdateChecker.shared.checkLatest(token: token)
+                let update = try await UpdateChecker.shared.checkLatest()
                 await MainActor.run {
                     self?.availableUpdate = update
                     self?.updateCheckError = nil
+                    self?.isCheckingUpdate = false
+                    self?.lastUpdateCheckAt = Date()
                 }
             } catch {
                 Logger.shared.warn("UpdateChecker failed: \(error)")
                 await MainActor.run {
                     self?.updateCheckError = "\(error)"
+                    self?.isCheckingUpdate = false
+                    self?.lastUpdateCheckAt = Date()
                     if manual { /* surface only on manual check; auto = quiet */ }
                 }
             }
@@ -174,10 +189,9 @@ final class AppState: ObservableObject {
     /// On success the app terminates and the helper script relaunches.
     func installAvailableUpdate() {
         guard let update = availableUpdate else { return }
-        let token = settings.githubToken
         Task { [weak self] in
             do {
-                try await UpdateInstaller.shared.install(update: update, token: token) { progress in
+                try await UpdateInstaller.shared.install(update: update) { progress in
                     self?.updateInstallProgress = progress
                 }
             } catch {
