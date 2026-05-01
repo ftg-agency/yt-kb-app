@@ -526,25 +526,8 @@ struct SettingsView: View {
                 get: { appState.settings.autoUpdateEnabled },
                 set: { appState.settings.setAutoUpdateEnabled($0) }
             ))
-            Text("Проверка идёт раз в 6 часов через GitHub Releases API. Репо приватный, поэтому нужен GitHub Personal Access Token (см. ниже).")
+            Text("Проверка идёт раз в 6 часов через GitHub Releases API. Репо публичный — токен не нужен.")
                 .font(.caption)
-                .foregroundStyle(.secondary)
-
-            HStack(spacing: 6) {
-                Text("GitHub Token:")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                SecureField("paste PAT", text: tokenBinding)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 320)
-                if appState.settings.githubToken != nil {
-                    Image(systemName: "checkmark.seal.fill")
-                        .foregroundStyle(.green)
-                        .help("Токен сохранён в Keychain")
-                }
-            }
-            Text("Создаётся на github.com/settings/tokens → Fine-grained → доступ к репо leopavlinskiy/yt-kb-app → Repository permissions → Contents: Read.")
-                .font(.caption2)
                 .foregroundStyle(.secondary)
 
             HStack(spacing: 8) {
@@ -566,6 +549,26 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+
+            DisclosureGroup("GitHub Token (необязательно)") {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        SecureField("paste PAT", text: tokenBinding)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: 320)
+                        if appState.settings.githubToken != nil {
+                            Image(systemName: "checkmark.seal.fill")
+                                .foregroundStyle(.green)
+                                .help("Токен сохранён в Keychain")
+                        }
+                    }
+                    Text("Без токена работает 60 запросов/час с одного IP (хватает с запасом). Токен снимает лимит до 5000/ч и нужен только если ты живёшь за NAT с десятком других пользователей yt-kb. Любой fine-grained PAT без специальных прав подойдёт.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.top, 4)
+            }
+            .font(.caption)
         }
     }
 

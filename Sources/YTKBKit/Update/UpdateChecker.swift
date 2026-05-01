@@ -39,10 +39,15 @@ actor UpdateChecker {
             throw UpdateError.network("Не HTTP ответ")
         }
         if http.statusCode == 404 {
-            throw UpdateError.network("404 — репозиторий приватный? Нужен GitHub-токен в Settings.")
+            throw UpdateError.network("404 — репозиторий не найден.")
         }
-        if http.statusCode == 401 || http.statusCode == 403 {
-            throw UpdateError.network("\(http.statusCode) — токен невалиден или нет прав на repo.")
+        if http.statusCode == 403 {
+            // Most likely anonymous-rate-limit (60 req/h per IP). Surface a
+            // hint to add a token for 5000/h.
+            throw UpdateError.network("403 — превышен rate limit. Добавьте GitHub Token в Settings (5000 req/h вместо 60).")
+        }
+        if http.statusCode == 401 {
+            throw UpdateError.network("401 — токен невалиден.")
         }
         guard (200...299).contains(http.statusCode) else {
             throw UpdateError.network("HTTP \(http.statusCode)")
