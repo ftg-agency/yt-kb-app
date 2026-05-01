@@ -5,6 +5,9 @@ struct ResolvedChannel {
     let channelId: String?
     let channelURL: String
     let videos: [VideoRef]
+    /// YouTube's reported total — may be larger than `videos.count` if yt-dlp
+    /// can't enumerate the full channel history. nil if not known.
+    let reportedTotalCount: Int?
 }
 
 package actor ChannelResolver {
@@ -45,7 +48,8 @@ package actor ChannelResolver {
             name: entries.displayName,
             channelId: entries.channelId ?? entries.uploaderId,
             channelURL: entries.channelUrl ?? channelURL,
-            videos: videos
+            videos: videos,
+            reportedTotalCount: entries.playlistCount
         )
     }
 
@@ -54,15 +58,29 @@ package actor ChannelResolver {
         return await extractVideos(from: entries.entries ?? [])
     }
 
+    /// Same as `listVideos` but also returns YouTube's reported total count
+    /// (or nil). Used by PollOperation to surface "we got X of Y" diagnostics.
+    func listVideosWithCount(channelURL: String) async throws -> (videos: [VideoRef], reportedTotal: Int?) {
+        let entries = try await fetchEntries(channelURL: channelURL)
+        let videos = await extractVideos(from: entries.entries ?? [])
+        return (videos, entries.playlistCount)
+    }
+
     /// Player-client cascade for channel listings. Some channels return only
     /// ~500 entries on `web`, but the same channel via `tv_simply` returns the
     /// full history. We try the most permissive client first; if it fails or
     /// returns suspiciously few entries we fall back. Keep order from
     /// most-permissive to most-compatible.
+    /// Player-client cascade for channel listings. YouTube's continuation
+    /// tokens behave differently per client; some return the full channel
+    /// history (4000+ videos) while others cap at a few hundred. We try every
+    /// variant and keep the response with the most entries.
     private static let playerClientCascade: [String] = [
-        "tv_simply,web,web_safari",
+        "tv_simply",
         "tv,web",
-        "ios,web"
+        "mweb,web",
+        "ios,android",
+        "web,web_safari"
     ]
 
     private func fetchEntries(channelURL: String) async throws -> FlatPlaylistResponse {
@@ -70,19 +88,24 @@ package actor ChannelResolver {
 
         var lastError: Error?
         var bestResponse: FlatPlaylistResponse?
+        var bestCount = 0
+        var allCounts: [(client: String, count: Int)] = []
 
-        for (idx, clients) in Self.playerClientCascade.enumerated() {
+        for clients in Self.playerClientCascade {
             do {
                 let response = try await fetchOnce(url: normalised, playerClients: clients)
                 let count = response.entries?.count ?? 0
-                Logger.shared.info("ChannelResolver: clients=\(clients) → \(count) entries from \(normalised)")
-                if let best = bestResponse, (best.entries?.count ?? 0) >= count {
-                    // Earlier cascade attempt returned more entries; keep it
-                } else {
+                let reported = response.playlistCount ?? -1
+                allCounts.append((clients, count))
+                Logger.shared.info("ChannelResolver: clients=\(clients) → \(count) entries (yt-dlp reports playlist_count=\(reported))")
+                if count > bestCount {
                     bestResponse = response
+                    bestCount = count
                 }
-                // If we got a non-suspicious count (>500 or no .web cascade left), stop
-                if count > 500 || idx == Self.playerClientCascade.count - 1 {
+                // If this attempt returned the channel's reported total (within
+                // a few entries — channels add/remove videos during enumeration),
+                // there's no point trying more clients.
+                if reported > 0 && count >= reported - 5 {
                     break
                 }
             } catch {
@@ -93,6 +116,13 @@ package actor ChannelResolver {
         }
 
         if let best = bestResponse {
+            let reported = best.playlistCount ?? -1
+            let summary = allCounts.map { "\($0.client)=\($0.count)" }.joined(separator: ", ")
+            if reported > 0 && bestCount < reported - 5 {
+                Logger.shared.warn("ChannelResolver: BEST got \(bestCount) of \(reported) reported (yt-dlp can't enumerate the rest). Per-client: \(summary)")
+            } else {
+                Logger.shared.info("ChannelResolver: BEST = \(bestCount) entries. Per-client: \(summary)")
+            }
             return best
         }
         throw lastError ?? YTDLPError.decodeFailed("ChannelResolver: all attempts failed")
@@ -105,12 +135,11 @@ package actor ChannelResolver {
             "--dump-single-json",
             "--no-warnings",
             "--extractor-args", "youtube:player_client=\(playerClients)",
-            // Explicit slice — defensively ensures yt-dlp doesn't apply any
-            // hidden default cap. `1:` means "all from index 1".
             "-I", "1:99999",
             url
         ])
-        let result = try await runner.run(args, timeout: 360)
+        // 10 minutes — very large channels (5000+ videos) take a while
+        let result = try await runner.run(args, timeout: 600)
         guard result.exitCode == 0 else {
             throw YTDLPError.nonZeroExit(result.exitCode, result.stderr.lastNonEmptyLine)
         }

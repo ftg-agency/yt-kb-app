@@ -71,12 +71,19 @@ package struct FlatPlaylistResponse: Decodable {
     package let uploaderId: String?
     package let channelUrl: String?
     package let entries: [FlatPlaylistEntry]?
+    /// YouTube's reported total video count for the channel/playlist. May be
+    /// larger than `entries.count` for big channels where yt-dlp's continuation
+    /// loop hits the API cap. We surface the discrepancy in the UI.
+    package let playlistCount: Int?
+    package let channelFollowerCount: Int?
 
     enum CodingKeys: String, CodingKey {
         case id, title, channel, uploader, entries
         case channelId = "channel_id"
         case uploaderId = "uploader_id"
         case channelUrl = "channel_url"
+        case playlistCount = "playlist_count"
+        case channelFollowerCount = "channel_follower_count"
     }
 
     package var displayName: String { channel ?? uploader ?? title ?? "Unknown" }

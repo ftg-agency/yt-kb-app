@@ -110,7 +110,22 @@ struct ChannelRowView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
+            if let mismatch = channelTotalMismatch(p) {
+                Text(mismatch)
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
+            }
         }
+    }
+
+    /// When YouTube reports more videos than yt-dlp could enumerate, surface
+    /// the gap so the user understands "we'll catch the rest on the next poll
+    /// cycle, this isn't a hang".
+    private func channelTotalMismatch(_ p: ChannelProgress) -> String? {
+        guard let reported = p.reportedChannelTotal, reported > 0 else { return nil }
+        guard p.total > 0 && reported > p.total + 5 else { return nil }
+        return "На канале всего \(reported) видео, yt-dlp пока видит \(p.total) — остальное подберётся на следующих проверках"
     }
 
     private func progressPhaseLabel(_ p: ChannelProgress) -> String {

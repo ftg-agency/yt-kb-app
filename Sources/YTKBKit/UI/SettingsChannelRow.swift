@@ -119,6 +119,12 @@ struct SettingsChannelRow: View {
             ProgressView(value: progressFraction(p))
                 .progressViewStyle(.linear)
                 .tint(progressTint(p))
+            if let reported = p.reportedChannelTotal, reported > 0, p.total > 0, reported > p.total + 5 {
+                Text("На канале всего \(reported) видео — yt-dlp пока видит \(p.total). Остальное подтянется на следующих опросах.")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
+            }
         }
     }
 

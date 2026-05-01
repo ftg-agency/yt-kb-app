@@ -54,8 +54,11 @@ actor PollOperation {
 
         progress(ChannelProgress(phase: .resolving, current: 0, total: 0, label: nil, isInitialIndexing: isInitial))
         let videos: [VideoRef]
+        let reportedTotal: Int?
         do {
-            videos = try await resolver.listVideos(channelURL: channel.url)
+            let resolved = try await resolver.listVideosWithCount(channelURL: channel.url)
+            videos = resolved.videos
+            reportedTotal = resolved.reportedTotal
         } catch {
             if cancellation.isCancelled { report.cancelled = true; return report }
             report.firstError = "не удалось получить список видео: \(error)"
@@ -65,11 +68,12 @@ actor PollOperation {
 
         if cancellation.isCancelled { report.cancelled = true; return report }
 
-        progress(ChannelProgress(phase: .scanning, current: 0, total: 0, label: nil, isInitialIndexing: isInitial))
+        progress(ChannelProgress(phase: .scanning, current: 0, total: 0, label: nil, isInitialIndexing: isInitial, reportedChannelTotal: reportedTotal))
         let existing = KBScanner.scanExistingIds(in: kbRoot)
         let retryIds = Set(priorRetries.map(\.videoId))
         let toProcess = videos.filter { existing[$0.videoId] == nil && !retryIds.contains($0.videoId) }
-        Logger.shared.info("[\(channel.name)] found=\(videos.count) new=\(toProcess.count) retries=\(priorRetries.count)")
+        let reportedSummary = reportedTotal.map { " channelTotal=\($0)" } ?? ""
+        Logger.shared.info("[\(channel.name)] found=\(videos.count) new=\(toProcess.count) retries=\(priorRetries.count)\(reportedSummary)")
 
         let eligible = RetryProcessor.eligibleEntries(priorRetries)
         let totalSteps = toProcess.count + eligible.count
@@ -83,7 +87,8 @@ actor PollOperation {
                 current: idx + 1,
                 total: totalSteps,
                 label: label,
-                isInitialIndexing: isInitial
+                isInitialIndexing: isInitial,
+                reportedChannelTotal: reportedTotal
             ))
             let outcome = await processVideo(ref: ref, kbRoot: kbRoot)
             applyOutcome(outcome, ref: ref, channelURL: channel.url, channelName: channel.name, isRetry: false, report: &report)
@@ -103,7 +108,8 @@ actor PollOperation {
                 current: toProcess.count + idx + 1,
                 total: totalSteps,
                 label: label,
-                isInitialIndexing: false
+                isInitialIndexing: false,
+                reportedChannelTotal: reportedTotal
             ))
             let outcome = await processVideo(ref: ref, kbRoot: kbRoot)
             applyOutcome(outcome, ref: ref, channelURL: channel.url, channelName: channel.name, isRetry: true, report: &report, priorEntry: entry)

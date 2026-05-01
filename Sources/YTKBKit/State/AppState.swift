@@ -12,16 +12,21 @@ package struct ChannelProgress: Equatable, Sendable {
     }
     package var phase: Phase
     package var current: Int      // 1-based index of the video being processed (0 for resolving/scanning)
-    package var total: Int        // total to process this cycle
+    package var total: Int        // total to process this cycle (videos yt-dlp returned)
     package var label: String?    // current video title (or nil)
     package var isInitialIndexing: Bool = false  // set when channel has never been polled
+    /// YouTube's reported total video count for the channel. If this is
+    /// larger than `total`, yt-dlp couldn't enumerate the full channel and
+    /// the UI shows "X of total (channel has reportedTotal)".
+    package var reportedChannelTotal: Int? = nil
 
-    package init(phase: Phase, current: Int, total: Int, label: String? = nil, isInitialIndexing: Bool = false) {
+    package init(phase: Phase, current: Int, total: Int, label: String? = nil, isInitialIndexing: Bool = false, reportedChannelTotal: Int? = nil) {
         self.phase = phase
         self.current = current
         self.total = total
         self.label = label
         self.isInitialIndexing = isInitialIndexing
+        self.reportedChannelTotal = reportedChannelTotal
     }
 
     package var fraction: Double {
