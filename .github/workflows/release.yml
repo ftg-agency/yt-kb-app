@@ -22,6 +22,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Verify Info.plist version matches tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF##*/}"; tag="${tag#v}"
+          plist=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Info.plist)
+          if [[ "$tag" != "$plist" ]]; then
+            echo "::error::Tag v$tag does not match Info.plist CFBundleShortVersionString=$plist"
+            exit 1
+          fi
+          echo "Tag and Info.plist agree on version $tag"
+
       - name: Show toolchain
         run: |
           sw_vers
