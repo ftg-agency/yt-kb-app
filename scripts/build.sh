@@ -68,7 +68,13 @@ printf 'APPL????' > "$APP_BUNDLE/Contents/PkgInfo"
 echo "  bundle assembled at $APP_BUNDLE"
 
 echo "==> Step 6: ad-hoc codesign"
+# Clear xattrs that codesign rejects. macOS Tahoe sometimes leaves
+# com.apple.FinderInfo even after `xattr -cr`, so also explicitly target it.
 xattr -cr "$APP_BUNDLE"
+find "$APP_BUNDLE" -exec xattr -d com.apple.FinderInfo {} \; 2>/dev/null || true
+find "$APP_BUNDLE" -exec xattr -d com.apple.ResourceFork {} \; 2>/dev/null || true
+find "$APP_BUNDLE" -name ".DS_Store" -delete 2>/dev/null || true
+find "$APP_BUNDLE" -name "._*" -delete 2>/dev/null || true
 codesign --force --deep --sign - "$APP_BUNDLE"
 codesign --verify --verbose=2 "$APP_BUNDLE" || true
 

@@ -31,14 +31,56 @@ struct SettingsView: View {
     @State private var selection: SettingsSection = .general
 
     var body: some View {
-        NavigationSplitView(columnVisibility: .constant(.all)) {
-            List(SettingsSection.allCases, selection: $selection) { section in
-                Label(section.label, systemImage: section.systemImage)
-                    .tag(section)
+        HStack(spacing: 0) {
+            sidebar
+            Divider()
+            detail
+        }
+        .frame(minWidth: 720, idealWidth: 820, minHeight: 480, idealHeight: 560)
+    }
+
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(SettingsSection.allCases) { section in
+                Button {
+                    selection = section
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: section.systemImage)
+                            .frame(width: 18)
+                            .foregroundStyle(selection == section ? Color.white : Color.secondary)
+                        Text(section.label)
+                            .foregroundStyle(selection == section ? Color.white : Color.primary)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(selection == section ? Color.accentColor : Color.clear)
+                    )
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
-            .listStyle(.sidebar)
-            .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 260)
-        } detail: {
+            Spacer()
+        }
+        .padding(8)
+        .frame(width: 220, alignment: .top)
+        .frame(maxHeight: .infinity)
+        .background(Color(NSColor.windowBackgroundColor).opacity(0.6))
+    }
+
+    private var detail: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text(selection.label)
+                    .font(.title2.bold())
+                Spacer()
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 16)
+            .padding(.bottom, 8)
             ScrollView {
                 Group {
                     switch selection {
@@ -49,14 +91,12 @@ struct SettingsView: View {
                     case .about:    aboutTab
                     }
                 }
-                .padding(20)
+                .padding(.horizontal, 24)
+                .padding(.bottom, 20)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
             }
-            .navigationSplitViewColumnWidth(min: 480, ideal: 600)
-            .navigationTitle(selection.label)
         }
-        .navigationSplitViewStyle(.balanced)
-        .frame(minWidth: 720, idealWidth: 820, minHeight: 480, idealHeight: 560)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var channelsTab: some View {
@@ -309,14 +349,18 @@ struct SettingsView: View {
     }
 
     private var aboutTab: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("yt-kb").font(.headline)
-            Text("YouTube → Markdown база знаний").font(.subheadline).foregroundStyle(.secondary)
-            Spacer().frame(height: 12)
-            Text("Версия приложения: \(appVersion)")
-            Text("Логи: ~/Library/Logs/yt-kb/yt-kb.log").font(.caption).foregroundStyle(.secondary)
-            Text("State: ~/Library/Application Support/yt-kb/state.json").font(.caption).foregroundStyle(.secondary)
-            Spacer().frame(height: 8)
+        VStack(alignment: .leading, spacing: 14) {
+            Text("yt-kb").font(.title3.bold())
+            Text("YouTube → Markdown база знаний")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            Group {
+                row("Версия", appVersion)
+                row("Логи", "~/Library/Logs/yt-kb/yt-kb.log", isPath: true)
+                row("State", "~/Library/Application Support/yt-kb/state.json", isPath: true)
+            }
+
             HStack(spacing: 8) {
                 Button("Открыть лог в Console") {
                     let log = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
@@ -325,10 +369,93 @@ struct SettingsView: View {
                 }
                 Button("Показать onboarding ещё раз") { resetOnboarding() }
             }
+
+            Divider()
+                .padding(.vertical, 8)
+
+            Text("Удаление").font(.headline)
+            Text("Удалит state.json, логи и UserDefaults. После этого приложение закроется и его нужно будет перетащить в корзину вручную (мы не можем удалить приложение пока оно запущено).")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack {
+                Button("Удалить все данные приложения…", role: .destructive) {
+                    runUninstall()
+                }
+                Spacer()
+            }
+
             Spacer()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding()
+    }
+
+    @ViewBuilder
+    private func row(_ key: String, _ value: String, isPath: Bool = false) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(key + ":")
+                .frame(width: 70, alignment: .trailing)
+                .foregroundStyle(.secondary)
+                .font(.caption)
+            Text(value)
+                .font(isPath ? .caption.monospaced() : .caption)
+                .foregroundStyle(isPath ? .secondary : .primary)
+                .textSelection(.enabled)
+        }
+    }
+
+    private func runUninstall() {
+        let confirm = NSAlert()
+        confirm.messageText = "Удалить все данные yt-kb?"
+        confirm.informativeText = "Будут удалены:\n• ~/Library/Application Support/yt-kb (state.json)\n• ~/Library/Logs/yt-kb (логи)\n• ~/Library/Preferences/io.yt-kb.app.plist (настройки)\n\nПосле этого спросим отдельно про папку с транскриптами."
+        confirm.alertStyle = .warning
+        confirm.addButton(withTitle: "Удалить")
+        confirm.addButton(withTitle: "Отмена")
+        guard confirm.runModal() == .alertFirstButtonReturn else { return }
+
+        // Ask separately about KB folder (user's actual data)
+        var removeKB = false
+        if let kb = appState.settings.kbDirectory {
+            let kbAlert = NSAlert()
+            kbAlert.messageText = "Удалить и папку с транскриптами?"
+            kbAlert.informativeText = "\(kb.path)\n\nЭто твои сохранённые транскрипты — обычно их хочется оставить, потому что заново качать долго. По умолчанию папку оставляем."
+            kbAlert.alertStyle = .warning
+            kbAlert.addButton(withTitle: "Оставить папку")
+            kbAlert.addButton(withTitle: "Удалить вместе с папкой")
+            removeKB = (kbAlert.runModal() == .alertSecondButtonReturn)
+        }
+
+        let kbToRemove = removeKB ? appState.settings.kbDirectory : nil
+
+        Task {
+            // Stop any running poll first
+            await PollingCoordinator.shared.cancel()
+
+            await MainActor.run {
+                let fm = FileManager.default
+                let library = fm.urls(for: .libraryDirectory, in: .userDomainMask)[0]
+                let supportDir = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("yt-kb")
+                let logsDir = library.appendingPathComponent("Logs/yt-kb")
+                try? fm.removeItem(at: supportDir)
+                try? fm.removeItem(at: logsDir)
+
+                if let domain = Bundle.main.bundleIdentifier {
+                    UserDefaults.standard.removePersistentDomain(forName: domain)
+                    UserDefaults.standard.synchronize()
+                }
+
+                if let kb = kbToRemove {
+                    let started = kb.startAccessingSecurityScopedResource()
+                    try? fm.removeItem(at: kb)
+                    if started { kb.stopAccessingSecurityScopedResource() }
+                }
+
+                let final = NSAlert()
+                final.messageText = "Данные удалены"
+                final.informativeText = "Чтобы завершить удаление — перетащите YTKB.app в корзину. Приложение сейчас закроется."
+                final.runModal()
+                NSApp.terminate(nil)
+            }
+        }
     }
 
     private func resetOnboarding() {
@@ -534,7 +661,7 @@ private struct LanguagePriorityList: View {
     @State private var newToken: String = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             ForEach(Array(appState.settings.languagePriority.enumerated()), id: \.offset) { idx, token in
                 HStack(spacing: 6) {
                     Text("\(idx + 1).")
@@ -560,21 +687,32 @@ private struct LanguagePriorityList: View {
                 }
                 .padding(.vertical, 2)
             }
-            HStack {
-                TextField("ru / fr-FR / @any...", text: $newToken)
-                    .textFieldStyle(.roundedBorder)
-                Button("Добавить") {
-                    let trimmed = newToken.trimmingCharacters(in: .whitespaces)
-                    guard !trimmed.isEmpty else { return }
-                    var list = appState.settings.languagePriority
-                    if !list.contains(trimmed) {
-                        list.append(trimmed)
-                        appState.settings.setLanguagePriority(list)
-                    }
-                    newToken = ""
+            Divider().padding(.vertical, 4)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Добавить свой код языка")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    TextField("например ru или fr-FR", text: $newToken)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: .infinity)
+                        .onSubmit { addToken() }
+                    Button("Добавить") { addToken() }
+                        .disabled(newToken.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
         }
+    }
+
+    private func addToken() {
+        let trimmed = newToken.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        var list = appState.settings.languagePriority
+        if !list.contains(trimmed) {
+            list.append(trimmed)
+            appState.settings.setLanguagePriority(list)
+        }
+        newToken = ""
     }
 
     private func displayName(for token: String) -> String {

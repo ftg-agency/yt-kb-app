@@ -139,13 +139,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency
         let view = SettingsView(appState: appState)
         let win = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 820, height: 560),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
         win.title = "yt-kb · Настройки"
         win.contentView = NSHostingView(rootView: view)
         win.contentMinSize = NSSize(width: 720, height: 480)
+        win.collectionBehavior = [.fullScreenPrimary]
         win.center()
         win.isReleasedWhenClosed = false
         settingsWindow = win
@@ -163,9 +164,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency
             self?.onboardingWindow?.close()
             self?.onboardingWindow = nil
         }
-        .frame(width: 520, height: 380)
         let win = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 380),
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 480),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false

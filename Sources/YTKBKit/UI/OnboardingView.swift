@@ -10,9 +10,17 @@ struct OnboardingView: View {
     @State private var hasCheckedDiscovery = false
 
     var body: some View {
-        VStack(spacing: 16) {
-            Text("Добро пожаловать в yt-kb").font(.title2.bold())
-            Text("Шаг \(step + 1) из 3").font(.caption).foregroundStyle(.secondary)
+        VStack(spacing: 0) {
+            VStack(spacing: 12) {
+                Text("Добро пожаловать в yt-kb")
+                    .font(.title.bold())
+                Text("Шаг \(step + 1) из 3")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 32)
+            .padding(.top, 32)
+            .padding(.bottom, 16)
 
             Group {
                 switch step {
@@ -21,11 +29,15 @@ struct OnboardingView: View {
                 default: doneStep
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.horizontal, 32)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
-            HStack {
+            Divider()
+
+            HStack(spacing: 12) {
                 if step > 0 {
                     Button("Назад") { step -= 1 }
+                        .controlSize(.large)
                 }
                 Spacer()
                 Button(step < 2 ? "Дальше" : "Готово") {
@@ -43,10 +55,13 @@ struct OnboardingView: View {
                         onFinish()
                     }
                 }
+                .controlSize(.large)
+                .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
             }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 16)
         }
-        .padding(20)
         .onAppear {
             // Pre-set the default KB dir so step 1 "Дальше" is enabled out of the box.
             // User can override by clicking "Выбрать..." or change later in Settings.
@@ -54,7 +69,7 @@ struct OnboardingView: View {
                 useDefault()
             }
         }
-        .frame(width: 540, height: 420)
+        .frame(width: 560, height: 480)
     }
 
     private var kbStep: some View {
