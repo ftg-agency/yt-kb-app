@@ -2,12 +2,15 @@
 # Build YTKB.app and YTKB.dmg from the Swift Package — Apple Silicon only.
 #
 # Steps:
-#   1. Ensure vendored/yt-dlp exists (run download-ytdlp.sh otherwise).
-#   2. Run unit tests (Apple Silicon, debug). Bail out on failure.
+#   1. Ensure vendored/yt-dlp exists.
+#   2. Run unit tests.
 #   3. swift build -c release --arch arm64.
-#   4. Assemble .app bundle.
-#   5. Strip xattrs + ad-hoc codesign.
-#   6. hdiutil create UDBZ DMG with /Applications symlink.
+#   4. Assemble + codesign + DMG-pack the bundle in /tmp (NOT in dist/).
+#      iCloud-synced paths (Desktop/Documents) inject com.apple.FinderInfo
+#      onto new directories, which codesign rejects with "resource fork,
+#      Finder information, or similar detritus not allowed". Building in
+#      /tmp avoids the File Provider entirely.
+#   5. ditto the signed bundle + the DMG out to $ROOT/dist for distribution.
 
 set -euo pipefail
 
@@ -16,9 +19,14 @@ cd "$ROOT"
 
 APP_NAME="YTKB"
 DISPLAY_NAME="yt-kb"
-APP_BUNDLE="$ROOT/dist/$APP_NAME.app"
-STAGING="$ROOT/dist/staging"
-DMG_OUT="$ROOT/dist/${APP_NAME}.dmg"
+DIST_DIR="$ROOT/dist"
+DMG_OUT="$DIST_DIR/${APP_NAME}.dmg"
+DIST_APP="$DIST_DIR/$APP_NAME.app"
+
+WORK_DIR="$(mktemp -d -t ytkb-build)"
+trap "rm -rf '$WORK_DIR'" EXIT
+WORK_APP="$WORK_DIR/$APP_NAME.app"
+WORK_STAGING="$WORK_DIR/staging"
 
 SKIP_TESTS="${SKIP_TESTS:-0}"
 
@@ -49,57 +57,47 @@ if [[ ! -f "$ROOT/Resources/AppIcon.icns" ]]; then
     "$ROOT/scripts/make-icon.sh"
 fi
 
-echo "==> Step 5: assemble $APP_NAME.app"
-rm -rf "$APP_BUNDLE"
-mkdir -p "$APP_BUNDLE/Contents/MacOS"
-mkdir -p "$APP_BUNDLE/Contents/Resources"
+echo "==> Step 5: assemble $APP_NAME.app in $WORK_DIR"
+mkdir -p "$WORK_APP/Contents/MacOS"
+mkdir -p "$WORK_APP/Contents/Resources"
 
-cp "$ROOT/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
-cp "$EXEC_PATH" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
-chmod +x "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
-cp "$ROOT/vendored/yt-dlp" "$APP_BUNDLE/Contents/Resources/yt-dlp"
-chmod +x "$APP_BUNDLE/Contents/Resources/yt-dlp"
-# Anti-tamper: write SHA256 of the bundled binary so the app can verify it on launch
-shasum -a 256 "$APP_BUNDLE/Contents/Resources/yt-dlp" | awk '{print $1}' > "$APP_BUNDLE/Contents/Resources/yt-dlp.sha256"
-echo "  yt-dlp sha256: $(cat "$APP_BUNDLE/Contents/Resources/yt-dlp.sha256")"
-cp "$ROOT/Resources/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
+cp "$ROOT/Info.plist" "$WORK_APP/Contents/Info.plist"
+cp "$EXEC_PATH" "$WORK_APP/Contents/MacOS/$APP_NAME"
+chmod +x "$WORK_APP/Contents/MacOS/$APP_NAME"
+cp "$ROOT/vendored/yt-dlp" "$WORK_APP/Contents/Resources/yt-dlp"
+chmod +x "$WORK_APP/Contents/Resources/yt-dlp"
+shasum -a 256 "$WORK_APP/Contents/Resources/yt-dlp" | awk '{print $1}' > "$WORK_APP/Contents/Resources/yt-dlp.sha256"
+echo "  yt-dlp sha256: $(cat "$WORK_APP/Contents/Resources/yt-dlp.sha256")"
+cp "$ROOT/Resources/AppIcon.icns" "$WORK_APP/Contents/Resources/AppIcon.icns"
+printf 'APPL????' > "$WORK_APP/Contents/PkgInfo"
+echo "  bundle assembled at $WORK_APP"
 
-printf 'APPL????' > "$APP_BUNDLE/Contents/PkgInfo"
-echo "  bundle assembled at $APP_BUNDLE"
-
-echo "==> Step 6: ad-hoc codesign"
-# Clear xattrs that codesign rejects. macOS Tahoe sometimes leaves
-# com.apple.FinderInfo even after `xattr -cr`, so also explicitly target it.
-xattr -cr "$APP_BUNDLE"
-find "$APP_BUNDLE" -exec xattr -d com.apple.FinderInfo {} \; 2>/dev/null || true
-find "$APP_BUNDLE" -exec xattr -d com.apple.ResourceFork {} \; 2>/dev/null || true
-find "$APP_BUNDLE" -name ".DS_Store" -delete 2>/dev/null || true
-find "$APP_BUNDLE" -name "._*" -delete 2>/dev/null || true
-codesign --force --deep --sign - "$APP_BUNDLE"
-codesign --verify --verbose=2 "$APP_BUNDLE" || true
+echo "==> Step 6: ad-hoc codesign (in /tmp, no iCloud File Provider)"
+xattr -cr "$WORK_APP"
+codesign --force --deep --sign - "$WORK_APP"
+codesign --verify --verbose=2 "$WORK_APP"
 
 echo "==> Step 7: build DMG"
-rm -rf "$STAGING"
-mkdir -p "$STAGING"
-cp -R "$APP_BUNDLE" "$STAGING/"
-ln -s /Applications "$STAGING/Applications"
-
-rm -f "$DMG_OUT"
+mkdir -p "$WORK_STAGING"
+cp -R "$WORK_APP" "$WORK_STAGING/"
+ln -s /Applications "$WORK_STAGING/Applications"
+WORK_DMG="$WORK_DIR/$APP_NAME.dmg"
 hdiutil create \
     -volname "$DISPLAY_NAME" \
-    -srcfolder "$STAGING" \
+    -srcfolder "$WORK_STAGING" \
     -ov \
     -format UDBZ \
-    "$DMG_OUT" >/dev/null
+    "$WORK_DMG" >/dev/null
 
-# Tidy up: staging dir is a temporary copy of the bundle used only as the DMG
-# source. Leaving it around makes Spotlight index it as a separate app
-# alongside dist/YTKB.app.
-rm -rf "$STAGING"
+echo "==> Step 8: copy artifacts to $DIST_DIR"
+mkdir -p "$DIST_DIR"
+rm -rf "$DIST_APP"
+ditto "$WORK_APP" "$DIST_APP"
+cp "$WORK_DMG" "$DMG_OUT"
 
 echo
 echo "==> Done"
-echo "  app:  $APP_BUNDLE"
+echo "  app:  $DIST_APP"
 echo "  dmg:  $DMG_OUT  ($(du -h "$DMG_OUT" | cut -f1))"
 echo
 echo "Install:  open $DMG_OUT, drag $APP_NAME.app into /Applications"

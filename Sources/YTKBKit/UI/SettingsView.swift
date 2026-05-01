@@ -374,11 +374,11 @@ struct SettingsView: View {
                 .padding(.vertical, 8)
 
             Text("Удаление").font(.headline)
-            Text("Удалит state.json, логи и UserDefaults. После этого приложение закроется и его нужно будет перетащить в корзину вручную (мы не можем удалить приложение пока оно запущено).")
+            Text("Уберёт настройки и список каналов. Папку с транскриптами спросим отдельно.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             HStack {
-                Button("Удалить все данные приложения…", role: .destructive) {
+                Button("Удалить yt-kb…", role: .destructive) {
                     runUninstall()
                 }
                 Spacer()
@@ -405,33 +405,24 @@ struct SettingsView: View {
 
     private func runUninstall() {
         let confirm = NSAlert()
-        confirm.messageText = "Удалить все данные yt-kb?"
-        confirm.informativeText = """
-        Будут удалены:
-        • ~/Library/Application Support/yt-kb (state.json)
-        • ~/Library/Logs/yt-kb (логи)
-        • ~/Library/Preferences/io.yt-kb.app.plist (настройки)
-        • ~/Library/Caches/io.yt-kb.app
-        • ~/Library/Saved Application State/io.yt-kb.app.savedState
-        • ~/Library/HTTPStorages/io.yt-kb.app
-        • ~/Library/WebKit/io.yt-kb.app
-
-        После этого спросим отдельно про папку с транскриптами.
-        """
+        confirm.messageText = "Удалить yt-kb?"
+        confirm.informativeText = "Будут удалены настройки, список каналов и логи. После этого нужно будет перетащить приложение из «Программы» в Корзину."
         confirm.alertStyle = .warning
         confirm.addButton(withTitle: "Удалить")
         confirm.addButton(withTitle: "Отмена")
+        confirm.accessoryView = NSView(frame: NSRect(x: 0, y: 0, width: 480, height: 0))
         guard confirm.runModal() == .alertFirstButtonReturn else { return }
 
-        // Ask separately about KB folder (user's actual data)
+        // Ask about KB folder separately
         var removeKB = false
         if let kb = appState.settings.kbDirectory {
             let kbAlert = NSAlert()
-            kbAlert.messageText = "Удалить и папку с транскриптами?"
-            kbAlert.informativeText = "\(kb.path)\n\nЭто твои сохранённые транскрипты — обычно их хочется оставить, потому что заново качать долго. По умолчанию папку оставляем."
+            kbAlert.messageText = "Удалить также папку с транскриптами?"
+            kbAlert.informativeText = "\(kb.path)\n\nОбычно её оставляют — заново скачивать видео долго."
             kbAlert.alertStyle = .warning
-            kbAlert.addButton(withTitle: "Оставить папку")
-            kbAlert.addButton(withTitle: "Удалить вместе с папкой")
+            kbAlert.addButton(withTitle: "Оставить")
+            kbAlert.addButton(withTitle: "Удалить")
+            kbAlert.accessoryView = NSView(frame: NSRect(x: 0, y: 0, width: 480, height: 0))
             removeKB = (kbAlert.runModal() == .alertSecondButtonReturn)
         }
 
@@ -446,11 +437,11 @@ struct SettingsView: View {
                 let home = URL(fileURLWithPath: NSHomeDirectory())
                 let library = home.appendingPathComponent("Library")
 
-                // 1. App-managed dirs (these we wrote ourselves)
+                // App-managed dirs (these we wrote ourselves)
                 try? fm.removeItem(at: library.appendingPathComponent("Application Support/yt-kb"))
                 try? fm.removeItem(at: library.appendingPathComponent("Logs/yt-kb"))
 
-                // 2. System-managed dirs (macOS may have created them automatically)
+                // System-managed dirs (macOS may have created them automatically)
                 let systemDirs: [String] = [
                     "Caches/\(bundleId)",
                     "Saved Application State/\(bundleId).savedState",
@@ -463,23 +454,17 @@ struct SettingsView: View {
                     try? fm.removeItem(at: library.appendingPathComponent(sub))
                 }
 
-                // 3. UserDefaults — clear in-memory state
                 UserDefaults.standard.removePersistentDomain(forName: bundleId)
                 UserDefaults.standard.synchronize()
 
-                // 4. KB folder (user's data) — only if explicitly opted in
                 if let kb = kbToRemove {
                     let started = kb.startAccessingSecurityScopedResource()
                     try? fm.removeItem(at: kb)
                     if started { kb.stopAccessingSecurityScopedResource() }
                 }
 
-                // 5. Defer plist file deletion to after our process exits.
-                // cfprefsd writes the plist back on app termination. We need the
-                // file deleted AFTER the daemon stops caring about us — so we
-                // detach a shell that sleeps 2s and then rm-rf's the prefs plist
-                // and re-attempts the system dirs in case cfprefsd recreated
-                // anything mid-shutdown.
+                // Detached cleanup — runs after our process exits so cfprefsd
+                // doesn't re-flush the plist file we just removed.
                 let prefsPath = library.appendingPathComponent("Preferences/\(bundleId).plist").path
                 let cleanupScript = """
                 sleep 2
@@ -492,14 +477,17 @@ struct SettingsView: View {
                 let task = Process()
                 task.executableURL = URL(fileURLWithPath: "/bin/sh")
                 task.arguments = ["-c", cleanupScript]
-                // Detach from parent: don't wait, don't pipe.
                 try? task.run()
 
-                // 6. Tell user what to do next, then quit.
                 let final = NSAlert()
-                final.messageText = "Данные удалены"
-                final.informativeText = "Все служебные файлы yt-kb удаляются. Сейчас приложение закроется — после этого перетащите YTKB.app в Корзину чтобы завершить удаление.\n\nЕсли используете AppCleaner и в нём останется один файл — это нормально, он удалится через 2 секунды после закрытия приложения."
+                final.messageText = "Готово"
+                final.informativeText = "Откройте «Программы» и перетащите YTKB в Корзину — это завершит удаление."
+                final.addButton(withTitle: "Открыть Программы и закрыть")
+                final.accessoryView = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: 0))
                 final.runModal()
+
+                // Open /Applications in Finder so user can drag the .app to trash
+                NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications"))
                 NSApp.terminate(nil)
             }
         }

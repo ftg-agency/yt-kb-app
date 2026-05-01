@@ -34,6 +34,7 @@ package struct ChannelProgress: Equatable, Sendable {
 final class AppState: ObservableObject {
     let settings = Settings()
     let channelStore = ChannelStore()
+    private var nestedSubscriptions: Set<AnyCancellable> = []
 
     @Published var isPolling: Bool = false
     @Published var pollingChannelURL: String?
@@ -64,6 +65,20 @@ final class AppState: ObservableObject {
     func bootstrap() {
         settings.load()
         channelStore.load()
+
+        // Forward nested ObservableObject changes (Settings, ChannelStore) up
+        // to AppState's objectWillChange. SwiftUI views observe AppState but
+        // read nested @Published properties (e.g. appState.settings.kbDirectory);
+        // without forwarding, those reads don't trigger re-renders when the
+        // nested object mutates. This was the cause of "selected KB folder
+        // doesn't display in Onboarding" and similar issues.
+        settings.objectWillChange
+            .sink { [weak self] in self?.objectWillChange.send() }
+            .store(in: &nestedSubscriptions)
+        channelStore.objectWillChange
+            .sink { [weak self] in self?.objectWillChange.send() }
+            .store(in: &nestedSubscriptions)
+
         // Onboarding triggers when:
         //   1. user never completed it (UserDefaults bool), OR
         //   2. state.json doesn't exist (fresh install — AppCleaner / new machine /
