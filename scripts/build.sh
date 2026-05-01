@@ -79,8 +79,13 @@ if [[ -z "$SIGN_ID" ]]; then
     echo "  no MACOS_SIGNING_IDENTITY — ad-hoc signing (local dev)"
     codesign --force --deep --sign - "$WORK_APP"
 else
-    echo "  signing nested binary: yt-dlp"
+    echo "  signing nested binary: yt-dlp (with library validation disabled)"
+    # yt-dlp is a PyInstaller bundle that extracts Python.framework to /tmp
+    # at runtime and dlopens it. Without disable-library-validation the
+    # hardened runtime rejects the load because Python.framework keeps its
+    # original Team ID after we re-sign yt-dlp.
     codesign --force --options runtime --timestamp \
+        --entitlements "$ROOT/entitlements.plist" \
         --sign "$SIGN_ID" \
         "$WORK_APP/Contents/Resources/yt-dlp"
     echo "  signing bundle with entitlements"
