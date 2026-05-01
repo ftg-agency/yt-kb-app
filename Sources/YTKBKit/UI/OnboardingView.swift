@@ -91,7 +91,7 @@ struct OnboardingView: View {
             .background(Color.secondary.opacity(0.1))
             .cornerRadius(6)
 
-            Button("Использовать дефолтную (\(appState.settings.defaultKBDirectory().path))") {
+            Button("Использовать дефолтную папку") {
                 useDefault()
             }
             .controlSize(.small)
@@ -129,10 +129,11 @@ struct OnboardingView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Готово!").font(.headline)
             if !discovered.isEmpty {
-                Text("В выбранной папке найдено \(discovered.count) канал(ов):")
+                Text("В выбранной папке найдено \(discovered.count) канал(ов). Они будут добавлены на отслеживание.")
                     .font(.callout)
+                    .foregroundStyle(.secondary)
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: 6) {
                         ForEach(discovered, id: \.url) { ch in
                             HStack {
                                 Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
@@ -142,13 +143,11 @@ struct OnboardingView: View {
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
+                            .padding(.vertical, 2)
                         }
                     }
                 }
-                .frame(maxHeight: 160)
-                Text("Они будут добавлены на отслеживание.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             } else {
                 Text("Иконка yt-kb появилась в menu bar — кликните по ней чтобы добавить первый канал.")
                     .font(.callout)
@@ -158,9 +157,10 @@ struct OnboardingView: View {
                     Text("← такая иконка").foregroundStyle(.secondary)
                 }
                 .padding(.top, 8)
+                Spacer()
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private func runDiscovery() {

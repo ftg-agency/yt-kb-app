@@ -693,7 +693,7 @@ struct SettingsView: View {
 
 private struct LanguagePriorityList: View {
     @ObservedObject var appState: AppState
-    @State private var newToken: String = ""
+    @State private var selectedCode: String = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -724,30 +724,39 @@ private struct LanguagePriorityList: View {
             }
             Divider().padding(.vertical, 4)
             VStack(alignment: .leading, spacing: 4) {
-                Text("Добавить свой код языка")
+                Text("Добавить язык")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 HStack(spacing: 8) {
-                    TextField("например ru или fr-FR", text: $newToken)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(maxWidth: .infinity)
-                        .onSubmit { addToken() }
-                    Button("Добавить") { addToken() }
-                        .disabled(newToken.trimmingCharacters(in: .whitespaces).isEmpty)
+                    Picker("", selection: $selectedCode) {
+                        Text("— выберите язык —").tag("")
+                        ForEach(availableLanguages) { lang in
+                            Text(lang.displayName).tag(lang.code)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity)
+                    Button("Добавить") { addSelected() }
+                        .disabled(selectedCode.isEmpty)
                 }
             }
         }
     }
 
-    private func addToken() {
-        let trimmed = newToken.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return }
+    /// Languages from the curated list that aren't already in the priority chain.
+    private var availableLanguages: [Languages.Entry] {
+        let alreadyAdded = Set(appState.settings.languagePriority.map { $0.lowercased() })
+        return Languages.common.filter { !alreadyAdded.contains($0.code.lowercased()) }
+    }
+
+    private func addSelected() {
+        guard !selectedCode.isEmpty else { return }
         var list = appState.settings.languagePriority
-        if !list.contains(trimmed) {
-            list.append(trimmed)
+        if !list.contains(selectedCode) {
+            list.append(selectedCode)
             appState.settings.setLanguagePriority(list)
         }
-        newToken = ""
+        selectedCode = ""
     }
 
     private func displayName(for token: String) -> String {
@@ -755,7 +764,7 @@ private struct LanguagePriorityList: View {
         case "@original": return "Язык оригинала видео"
         case "@english": return "Английский"
         case "@any": return "Любой доступный"
-        default: return token
+        default: return Languages.displayName(for: token)
         }
     }
 
