@@ -18,6 +18,11 @@ package struct TrackedChannel: Codable, Identifiable, Equatable {
     /// - > 0   → poll every N seconds
     package var pollIntervalSeconds: Int? = nil
 
+    /// YouTube's reported total video count, captured at the most recent
+    /// successful resolve. nil before first poll. Surfaced in the widget so
+    /// user always sees "X videos on YouTube" without having to start a poll.
+    package var videoCount: Int? = nil
+
     package init(
         url: String,
         channelId: String? = nil,
@@ -27,7 +32,8 @@ package struct TrackedChannel: Codable, Identifiable, Equatable {
         lastPollStatus: String? = nil,
         lastPollError: String? = nil,
         enabled: Bool = true,
-        pollIntervalSeconds: Int? = nil
+        pollIntervalSeconds: Int? = nil,
+        videoCount: Int? = nil
     ) {
         self.url = url
         self.channelId = channelId
@@ -38,6 +44,7 @@ package struct TrackedChannel: Codable, Identifiable, Equatable {
         self.lastPollError = lastPollError
         self.enabled = enabled
         self.pollIntervalSeconds = pollIntervalSeconds
+        self.videoCount = videoCount
     }
 
     /// Returns the effective interval in seconds (or nil if "manual only").

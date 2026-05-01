@@ -60,6 +60,7 @@ final class Settings: ObservableObject {
         static let quietHoursEnd = "quietHoursEnd"
         static let languagePriority = "languagePriority"  // [String], top-down
         static let preventSleepDuringPoll = "preventSleepDuringPoll"
+        static let maxConcurrentChannels = "maxConcurrentChannels"
     }
 
     @Published var kbDirectory: URL?
@@ -79,6 +80,12 @@ final class Settings: ObservableObject {
     /// Released when the cycle ends. NSBackgroundActivityScheduler still wakes
     /// the system periodically via Power Nap when on AC power.
     @Published var preventSleepDuringPoll: Bool = true
+    /// Max number of channels processed in parallel during a polling cycle.
+    /// Each channel is one yt-dlp pipeline. Higher values = faster on
+    /// multi-channel batches BUT increase chance of YouTube bot-detection
+    /// (more concurrent requests from same IP/cookies).
+    /// Range 1...4, default 2.
+    @Published var maxConcurrentChannels: Int = 2
 
     func load() {
         if let raw = defaults.string(forKey: Keys.browser),
@@ -100,12 +107,20 @@ final class Settings: ObservableObject {
             languagePriority = stored
         }
         preventSleepDuringPoll = defaults.object(forKey: Keys.preventSleepDuringPoll) as? Bool ?? true
+        let storedConc = defaults.object(forKey: Keys.maxConcurrentChannels) as? Int ?? 2
+        maxConcurrentChannels = max(1, min(4, storedConc))
         kbDirectory = resolveBookmark()
     }
 
     func setPreventSleepDuringPoll(_ value: Bool) {
         preventSleepDuringPoll = value
         defaults.set(value, forKey: Keys.preventSleepDuringPoll)
+    }
+
+    func setMaxConcurrentChannels(_ value: Int) {
+        let clamped = max(1, min(4, value))
+        maxConcurrentChannels = clamped
+        defaults.set(clamped, forKey: Keys.maxConcurrentChannels)
     }
 
     func setPollInterval(_ value: PollInterval) {

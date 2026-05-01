@@ -42,7 +42,12 @@ final class AppState: ObservableObject {
     private var nestedSubscriptions: Set<AnyCancellable> = []
 
     @Published var isPolling: Bool = false
+    /// Convenience: URL of the currently-polling channel when concurrency=1.
+    /// With parallel polling use `pollingChannelURLs` instead — kept for
+    /// backward compat with existing notification routing.
     @Published var pollingChannelURL: String?
+    /// Set of channel URLs currently being polled (concurrency-aware).
+    @Published var pollingChannelURLs: Set<String> = []
     @Published var lastError: String?
     @Published var needsOnboarding: Bool = false
 

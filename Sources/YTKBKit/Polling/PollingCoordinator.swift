@@ -72,6 +72,7 @@ actor PollingCoordinator {
             Task { @MainActor in
                 appState.isPolling = false
                 appState.pollingChannelURL = nil
+                appState.pollingChannelURLs.removeAll()
                 appState.channelProgress.removeAll()
             }
         }
@@ -83,6 +84,7 @@ actor PollingCoordinator {
         var totalDownloaded = 0
         var botHit = false
         var processedURLs: Set<String> = []
+        let maxConcurrent = await MainActor.run { appState.settings.maxConcurrentChannels }
 
         // Outer loop picks up channels added DURING this poll cycle. After we
         // finish the snapshot, we re-fetch the list and process anything new.
@@ -107,22 +109,37 @@ actor PollingCoordinator {
             }
             if pending.isEmpty { break outer }
 
-            for ch in pending {
+            // Process up to `maxConcurrent` channels in parallel via TaskGroup.
+            // Each yt-dlp pipeline runs in its own subprocess so OS-level
+            // parallelism is real. Bounded by user setting (default 2) to
+            // avoid YouTube rate-limiting from too many simultaneous requests.
+            let batches = stride(from: 0, to: pending.count, by: maxConcurrent).map {
+                Array(pending[$0..<min($0 + maxConcurrent, pending.count)])
+            }
+            for batch in batches {
                 if cancellation.isCancelled { break outer }
-                let priorRetries = await MainActor.run { appState.channelStore.retryEntriesFor(channelURL: ch.url) }
-                let report = await pollOneInternal(
-                    channel: ch,
-                    op: op,
-                    kbRoot: kbRoot,
-                    appState: appState,
-                    priorRetries: priorRetries
-                )
-                totalDownloaded += report.counts["ok"] ?? 0
-                processedURLs.insert(ch.url)
-                if report.cancelled { break outer }
-                if report.botCheckHit {
-                    botHit = true
-                    break outer
+                let reports = await withTaskGroup(of: PollChannelReport.self, returning: [PollChannelReport].self) { group in
+                    for ch in batch {
+                        group.addTask {
+                            let priorRetries = await MainActor.run { appState.channelStore.retryEntriesFor(channelURL: ch.url) }
+                            return await self.pollOneInternal(
+                                channel: ch,
+                                op: op,
+                                kbRoot: kbRoot,
+                                appState: appState,
+                                priorRetries: priorRetries
+                            )
+                        }
+                    }
+                    var collected: [PollChannelReport] = []
+                    for await r in group { collected.append(r) }
+                    return collected
+                }
+                for ch in batch { processedURLs.insert(ch.url) }
+                for report in reports {
+                    totalDownloaded += report.counts["ok"] ?? 0
+                    if report.cancelled { break outer }
+                    if report.botCheckHit { botHit = true; break outer }
                 }
             }
         }
@@ -176,6 +193,7 @@ actor PollingCoordinator {
             Task { @MainActor in
                 appState.isPolling = false
                 appState.pollingChannelURL = nil
+                appState.pollingChannelURLs.removeAll()
                 appState.channelProgress.removeAll()
             }
         }
@@ -210,12 +228,18 @@ actor PollingCoordinator {
         let channelURL = channel.url
         await MainActor.run {
             appState.pollingChannelURL = channelURL
+            appState.pollingChannelURLs.insert(channelURL)
             // Seed progress immediately so the row shows "starting…" without flicker
             appState.channelProgress[channelURL] = ChannelProgress(
                 phase: .resolving,
                 current: 0, total: 0, label: nil,
                 isInitialIndexing: channel.lastPolledAt == nil
             )
+        }
+        defer {
+            Task { @MainActor in
+                appState.pollingChannelURLs.remove(channelURL)
+            }
         }
         Logger.shared.info("Polling \(channel.name) (\(channel.url))")
         let report = await op.pollChannel(
@@ -240,6 +264,9 @@ actor PollingCoordinator {
 
         var built = channel
         built.lastPolledAt = Date()
+        if let total = report.reportedChannelTotal {
+            built.videoCount = total
+        }
         let okCount = report.counts["ok"] ?? 0
         if let err = report.firstError, okCount == 0 {
             built.lastPollStatus = "error"

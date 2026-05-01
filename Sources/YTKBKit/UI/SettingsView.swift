@@ -138,7 +138,7 @@ struct SettingsView: View {
                         channel: channel,
                         globalLabel: appState.settings.pollInterval.shortLabel,
                         progress: appState.channelProgress[channel.url],
-                        isPollingThis: appState.pollingChannelURL == channel.url,
+                        isPollingThis: appState.pollingChannelURLs.contains(channel.url),
                         onSetInterval: { value in
                             var updated = channel
                             updated.pollIntervalSeconds = value
@@ -249,6 +249,19 @@ struct SettingsView: View {
                 }
                 .disabled(!appState.settings.backgroundPollingEnabled)
                 Text("Эта частота применяется ко всем каналам у которых не задана своя — её можно поменять для каждого канала отдельно во вкладке «Каналы».")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Параллельность") {
+                Stepper(
+                    "Каналов параллельно: \(appState.settings.maxConcurrentChannels)",
+                    value: Binding(
+                        get: { appState.settings.maxConcurrentChannels },
+                        set: { appState.settings.setMaxConcurrentChannels($0) }
+                    ),
+                    in: 1...4
+                )
+                Text("Сколько каналов опрашивать одновременно во время «Проверить сейчас» и scheduled-опроса. Каждый канал — отдельный yt-dlp subprocess. Больше = быстрее на батч-опросах, но повышает риск bot-detection от YouTube. По умолчанию 2.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

@@ -41,6 +41,15 @@ struct ChannelRowView: View {
                         .lineLimit(1)
                 }
                 Spacer()
+                if let count = channel.videoCount, count > 0 {
+                    Text("\(count) видео")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.secondary.opacity(0.12))
+                        .cornerRadius(4)
+                }
             }
 
             if let progress, isPollingThis {

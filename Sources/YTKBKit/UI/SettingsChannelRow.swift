@@ -33,9 +33,20 @@ struct SettingsChannelRow: View {
                 .controlSize(.small)
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(channel.name)
-                        .font(.body)
-                        .foregroundStyle(channel.enabled ? .primary : .secondary)
+                    HStack(spacing: 6) {
+                        Text(channel.name)
+                            .font(.body)
+                            .foregroundStyle(channel.enabled ? .primary : .secondary)
+                        if let count = channel.videoCount, count > 0 {
+                            Text("\(count) видео")
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 1)
+                                .background(Color.secondary.opacity(0.12))
+                                .cornerRadius(4)
+                        }
+                    }
                     Text(channel.url)
                         .font(.caption2)
                         .foregroundStyle(.secondary)

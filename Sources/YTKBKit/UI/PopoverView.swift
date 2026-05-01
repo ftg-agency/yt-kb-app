@@ -15,6 +15,7 @@ struct PopoverView: View {
     @State private var addError: String?
     @State private var addResolvedName: String?
     @State private var addResolvedChannelId: String?
+    @State private var addResolvedVideoCount: Int?
     @FocusState private var addURLFocused: Bool
 
     var body: some View {
@@ -130,7 +131,7 @@ struct PopoverView: View {
                             ForEach(sortedChannels) { channel in
                                 ChannelRowView(
                                     channel: channel,
-                                    isPollingThis: appState.pollingChannelURL == channel.url,
+                                    isPollingThis: appState.pollingChannelURLs.contains(channel.url),
                                     isFocused: appState.focusChannelURL == channel.url,
                                     progress: appState.channelProgress[channel.url],
                                     globalIntervalLabel: appState.settings.pollInterval.shortLabel,
@@ -327,6 +328,7 @@ struct PopoverView: View {
         addError = nil
         addResolvedName = nil
         addResolvedChannelId = nil
+        addResolvedVideoCount = nil
         addResolving = true
 
         let config = appState.settings.ytdlpConfig
@@ -338,6 +340,7 @@ struct PopoverView: View {
                 await MainActor.run {
                     addResolvedName = result.name
                     addResolvedChannelId = result.channelId
+                    addResolvedVideoCount = result.reportedTotalCount
                 }
             } catch {
                 await MainActor.run {
@@ -353,7 +356,8 @@ struct PopoverView: View {
             url: addURL.trimmingCharacters(in: .whitespaces),
             channelId: addResolvedChannelId,
             name: name,
-            addedAt: Date()
+            addedAt: Date(),
+            videoCount: addResolvedVideoCount
         )
         appState.channelStore.addChannel(channel)
         cancelAdd()
@@ -366,10 +370,10 @@ struct PopoverView: View {
     ///   3. Errors (so user notices)
     ///   4. By lastPolledAt descending (most recently polled first)
     private var sortedChannels: [TrackedChannel] {
-        let pollingURL = appState.pollingChannelURL
+        let pollingURLs = appState.pollingChannelURLs
         return appState.channelStore.channels.sorted { a, b in
-            let aPolling = (a.url == pollingURL) ? 0 : 1
-            let bPolling = (b.url == pollingURL) ? 0 : 1
+            let aPolling = pollingURLs.contains(a.url) ? 0 : 1
+            let bPolling = pollingURLs.contains(b.url) ? 0 : 1
             if aPolling != bPolling { return aPolling < bPolling }
             let aNew = a.lastPolledAt == nil ? 0 : 1
             let bNew = b.lastPolledAt == nil ? 0 : 1

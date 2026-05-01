@@ -13,6 +13,10 @@ struct PollChannelReport {
     var firstError: String?
     var botCheckHit: Bool = false
     var cancelled: Bool = false
+    /// YouTube-reported total video count. Captured during channel resolve,
+    /// used by PollingCoordinator to update TrackedChannel.videoCount so the
+    /// widget can show "4934 видео" persistently.
+    var reportedChannelTotal: Int?
     /// New entries to add to retry_queue (no_subs videos seen for the first time).
     var newRetries: [RetryQueueEntry] = []
     /// Entries to update (after a retry attempt: success → remove via `resolvedRetries`, no_subs → bump attempts).
@@ -59,6 +63,7 @@ actor PollOperation {
             let resolved = try await resolver.listVideosWithCount(channelURL: channel.url)
             videos = resolved.videos
             reportedTotal = resolved.reportedTotal
+            report.reportedChannelTotal = reportedTotal
         } catch {
             if cancellation.isCancelled { report.cancelled = true; return report }
             report.firstError = "не удалось получить список видео: \(error)"
