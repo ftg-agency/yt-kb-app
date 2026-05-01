@@ -144,6 +144,9 @@ struct OnboardingView: View {
                                     .foregroundStyle(.secondary)
                             }
                             .padding(.vertical, 2)
+                            // Right inset so SwiftUI's scroll indicator doesn't
+                            // overlap "N видео" on the right.
+                            .padding(.trailing, 16)
                         }
                     }
                 }
