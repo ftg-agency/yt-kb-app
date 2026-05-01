@@ -61,6 +61,7 @@ final class Settings: ObservableObject {
         static let languagePriority = "languagePriority"  // [String], top-down
         static let preventSleepDuringPoll = "preventSleepDuringPoll"
         static let maxConcurrentChannels = "maxConcurrentChannels"
+        static let autoUpdateEnabled = "autoUpdateEnabled"
     }
 
     @Published var kbDirectory: URL?
@@ -86,6 +87,24 @@ final class Settings: ObservableObject {
     /// (more concurrent requests from same IP/cookies).
     /// Range 1...4, default 2.
     @Published var maxConcurrentChannels: Int = 2
+    /// Auto-check GitHub Releases for newer versions every 6 hours.
+    /// User can also trigger a manual check via Settings → О приложении.
+    @Published var autoUpdateEnabled: Bool = true
+
+    /// GitHub Personal Access Token (read from Keychain). Required for
+    /// private-repo update checks. Stored separately from UserDefaults.
+    var githubToken: String? {
+        get { Keychain.load(account: "github_pat") }
+    }
+    func setGitHubToken(_ value: String) {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            Keychain.delete(account: "github_pat")
+        } else {
+            Keychain.save(trimmed, account: "github_pat")
+        }
+        objectWillChange.send()
+    }
 
     func load() {
         if let raw = defaults.string(forKey: Keys.browser),
@@ -109,7 +128,13 @@ final class Settings: ObservableObject {
         preventSleepDuringPoll = defaults.object(forKey: Keys.preventSleepDuringPoll) as? Bool ?? true
         let storedConc = defaults.object(forKey: Keys.maxConcurrentChannels) as? Int ?? 2
         maxConcurrentChannels = max(1, min(4, storedConc))
+        autoUpdateEnabled = defaults.object(forKey: Keys.autoUpdateEnabled) as? Bool ?? true
         kbDirectory = resolveBookmark()
+    }
+
+    func setAutoUpdateEnabled(_ value: Bool) {
+        autoUpdateEnabled = value
+        defaults.set(value, forKey: Keys.autoUpdateEnabled)
     }
 
     func setPreventSleepDuringPoll(_ value: Bool) {

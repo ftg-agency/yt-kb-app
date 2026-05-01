@@ -281,6 +281,10 @@ struct PopoverView: View {
                 }
             }
 
+            if let update = appState.availableUpdate {
+                updateBanner(update)
+            }
+
             Button {
                 onQuit()
             } label: {
@@ -292,6 +296,30 @@ struct PopoverView: View {
         .controlSize(.regular)
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
+    }
+
+    @ViewBuilder
+    private func updateBanner(_ update: AppUpdate) -> some View {
+        if let progress = appState.updateInstallProgress {
+            VStack(spacing: 4) {
+                HStack {
+                    Text(progress.phase)
+                        .font(.caption)
+                    Spacer()
+                }
+                ProgressView(value: progress.fraction >= 0 ? progress.fraction : nil)
+                    .progressViewStyle(.linear)
+            }
+        } else {
+            Button {
+                appState.installAvailableUpdate()
+            } label: {
+                Label("Обновить до \(update.version) и перезапустить", systemImage: "arrow.down.circle")
+                    .frame(maxWidth: .infinity)
+            }
+            .controlSize(.regular)
+            .buttonStyle(.borderedProminent)
+        }
     }
 
     // MARK: - Add channel inline form

@@ -13,6 +13,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency
     var settingsWindow: NSWindow?
     var onboardingWindow: NSWindow?
     private var keyEventMonitor: Any?
+    private var updateCheckTimer: Timer?
 
     public override init() { super.init() }
 
@@ -61,6 +62,20 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency
 
         if appState.needsOnboarding {
             showOnboarding()
+        }
+
+        // Auto-update: check on launch + every 6 hours
+        if appState.settings.autoUpdateEnabled {
+            // Slight delay so onboarding isn't competing for attention
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+                self?.appState.checkForUpdate()
+            }
+            updateCheckTimer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
+                guard let self else { return }
+                if self.appState.settings.autoUpdateEnabled {
+                    self.appState.checkForUpdate()
+                }
+            }
         }
     }
 

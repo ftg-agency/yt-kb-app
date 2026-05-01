@@ -386,6 +386,11 @@ struct SettingsView: View {
             Divider()
                 .padding(.vertical, 8)
 
+            updateSection
+
+            Divider()
+                .padding(.vertical, 8)
+
             Text("Удаление").font(.headline)
             Text("Уберёт настройки и список каналов. Папку с транскриптами спросим отдельно.")
                 .font(.caption)
@@ -511,6 +516,64 @@ struct SettingsView: View {
         appState.settings.onboardingCompleted = false
         appState.needsOnboarding = true
         NotificationCenter.default.post(name: .ytkbShowOnboarding, object: nil)
+    }
+
+    @ViewBuilder
+    private var updateSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Обновления").font(.headline)
+            Toggle("Автоматически проверять обновления", isOn: Binding(
+                get: { appState.settings.autoUpdateEnabled },
+                set: { appState.settings.setAutoUpdateEnabled($0) }
+            ))
+            Text("Проверка идёт раз в 6 часов через GitHub Releases API. Репо приватный, поэтому нужен GitHub Personal Access Token (см. ниже).")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 6) {
+                Text("GitHub Token:")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                SecureField("paste PAT", text: tokenBinding)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 320)
+                if appState.settings.githubToken != nil {
+                    Image(systemName: "checkmark.seal.fill")
+                        .foregroundStyle(.green)
+                        .help("Токен сохранён в Keychain")
+                }
+            }
+            Text("Создаётся на github.com/settings/tokens → Fine-grained → доступ к репо leopavlinskiy/yt-kb-app → Repository permissions → Contents: Read.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 8) {
+                Button("Проверить сейчас") {
+                    appState.checkForUpdate(manual: true)
+                }
+                if let update = appState.availableUpdate {
+                    Text("Доступна версия \(update.version)")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                } else if appState.updateCheckError != nil {
+                    Text(appState.updateCheckError ?? "")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .lineLimit(2)
+                } else {
+                    Text("Версия \(appVersion) — актуальная")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private var tokenBinding: Binding<String> {
+        Binding(
+            get: { appState.settings.githubToken ?? "" },
+            set: { appState.settings.setGitHubToken($0) }
+        )
     }
 
     private var appVersion: String {

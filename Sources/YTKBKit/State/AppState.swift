@@ -65,6 +65,16 @@ final class AppState: ObservableObject {
     /// notification-click deep link).
     @Published var focusChannelURL: String?
 
+    /// Latest update found by UpdateChecker, if newer than running version.
+    /// Surfaced as a banner button above "Выход" in the popover.
+    @Published var availableUpdate: AppUpdate?
+
+    /// Progress of an active update install (download/mount/swap).
+    @Published var updateInstallProgress: UpdateInstaller.Progress?
+
+    /// Last error from a manual or scheduled update check, surfaced in Settings.
+    @Published var updateCheckError: String?
+
     /// Set by AppDelegate after scheduler is constructed.
     var scheduler: PollingScheduler?
 
@@ -136,6 +146,48 @@ final class AppState: ObservableObject {
             Logger.shared.warn("KB directory unreachable: \(kb.path)")
         }
         return exists
+    }
+
+    /// Trigger an update check against GitHub Releases. Sets `availableUpdate`
+    /// on success (if newer than current). Also sets `updateCheckError` on
+    /// failure for surfacing in Settings.
+    func checkForUpdate(manual: Bool = false) {
+        let token = settings.githubToken
+        Task { [weak self] in
+            do {
+                let update = try await UpdateChecker.shared.checkLatest(token: token)
+                await MainActor.run {
+                    self?.availableUpdate = update
+                    self?.updateCheckError = nil
+                }
+            } catch {
+                Logger.shared.warn("UpdateChecker failed: \(error)")
+                await MainActor.run {
+                    self?.updateCheckError = "\(error)"
+                    if manual { /* surface only on manual check; auto = quiet */ }
+                }
+            }
+        }
+    }
+
+    /// Begin downloading + installing the update found by `checkForUpdate`.
+    /// On success the app terminates and the helper script relaunches.
+    func installAvailableUpdate() {
+        guard let update = availableUpdate else { return }
+        let token = settings.githubToken
+        Task { [weak self] in
+            do {
+                try await UpdateInstaller.shared.install(update: update, token: token) { progress in
+                    self?.updateInstallProgress = progress
+                }
+            } catch {
+                Logger.shared.error("UpdateInstaller failed: \(error)")
+                await MainActor.run {
+                    self?.updateInstallProgress = nil
+                    self?.updateCheckError = "Не удалось установить обновление: \(error)"
+                }
+            }
+        }
     }
 
     /// Add the given discovered channels as tracked.
