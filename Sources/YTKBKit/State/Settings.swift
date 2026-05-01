@@ -59,6 +59,7 @@ final class Settings: ObservableObject {
         static let quietHoursStart = "quietHoursStart"  // 0..23
         static let quietHoursEnd = "quietHoursEnd"
         static let languagePriority = "languagePriority"  // [String], top-down
+        static let preventSleepDuringPoll = "preventSleepDuringPoll"
     }
 
     @Published var kbDirectory: URL?
@@ -73,6 +74,11 @@ final class Settings: ObservableObject {
     @Published var quietHoursEnd: Int = 7
     /// Top-down preferred language order. Special tokens: "@original", "@english", "@any".
     @Published var languagePriority: [String] = ["@original", "@english", "@any"]
+    /// While polling is active, hold an `idleSystemSleepDisabled` activity so
+    /// the Mac doesn't sleep mid-cycle (a 5000-video channel can take hours).
+    /// Released when the cycle ends. NSBackgroundActivityScheduler still wakes
+    /// the system periodically via Power Nap when on AC power.
+    @Published var preventSleepDuringPoll: Bool = true
 
     func load() {
         if let raw = defaults.string(forKey: Keys.browser),
@@ -93,7 +99,13 @@ final class Settings: ObservableObject {
         if let stored = defaults.array(forKey: Keys.languagePriority) as? [String], !stored.isEmpty {
             languagePriority = stored
         }
+        preventSleepDuringPoll = defaults.object(forKey: Keys.preventSleepDuringPoll) as? Bool ?? true
         kbDirectory = resolveBookmark()
+    }
+
+    func setPreventSleepDuringPoll(_ value: Bool) {
+        preventSleepDuringPoll = value
+        defaults.set(value, forKey: Keys.preventSleepDuringPoll)
     }
 
     func setPollInterval(_ value: PollInterval) {

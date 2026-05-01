@@ -12,6 +12,7 @@ struct PollChannelReport {
     var counts: [String: Int] = ["ok": 0, "skipped": 0, "no_subs": 0, "error": 0]
     var firstError: String?
     var botCheckHit: Bool = false
+    var cancelled: Bool = false
     /// New entries to add to retry_queue (no_subs videos seen for the first time).
     var newRetries: [RetryQueueEntry] = []
     /// Entries to update (after a retry attempt: success → remove via `resolvedRetries`, no_subs → bump attempts).
@@ -43,20 +44,26 @@ actor PollOperation {
         channel: TrackedChannel,
         kbRoot: URL,
         priorRetries: [RetryQueueEntry],
+        cancellation: CancellationFlag,
         progress: @Sendable (ChannelProgress) -> Void
     ) async -> PollChannelReport {
         var report = PollChannelReport()
         let isInitial = channel.lastPolledAt == nil
+
+        if cancellation.isCancelled { report.cancelled = true; return report }
 
         progress(ChannelProgress(phase: .resolving, current: 0, total: 0, label: nil, isInitialIndexing: isInitial))
         let videos: [VideoRef]
         do {
             videos = try await resolver.listVideos(channelURL: channel.url)
         } catch {
+            if cancellation.isCancelled { report.cancelled = true; return report }
             report.firstError = "не удалось получить список видео: \(error)"
             report.botCheckHit = isBotCheck(report.firstError ?? "")
             return report
         }
+
+        if cancellation.isCancelled { report.cancelled = true; return report }
 
         progress(ChannelProgress(phase: .scanning, current: 0, total: 0, label: nil, isInitialIndexing: isInitial))
         let existing = KBScanner.scanExistingIds(in: kbRoot)
@@ -69,6 +76,7 @@ actor PollOperation {
 
         // First, process new videos
         for (idx, ref) in toProcess.enumerated() {
+            if cancellation.isCancelled { report.cancelled = true; return report }
             let label = ref.title.map { String($0.prefix(60)) } ?? ref.videoId
             progress(ChannelProgress(
                 phase: .processing,
@@ -87,6 +95,7 @@ actor PollOperation {
             Logger.shared.info("[\(channel.name)] processing \(eligible.count) retry entries")
         }
         for (idx, entry) in eligible.enumerated() {
+            if cancellation.isCancelled { report.cancelled = true; return report }
             let ref = VideoRef(videoId: entry.videoId, title: entry.videoTitle)
             let label = entry.videoTitle.map { String($0.prefix(60)) } ?? entry.videoId
             progress(ChannelProgress(

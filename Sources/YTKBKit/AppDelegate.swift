@@ -8,6 +8,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency
     var menuBarController: MenuBarController!
     var settingsWindow: NSWindow?
     var onboardingWindow: NSWindow?
+    private var keyEventMonitor: Any?
 
     public override init() { super.init() }
 
@@ -35,9 +36,48 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency
         // Request notification authorisation in the background
         Task { await NotificationsService.shared.requestAuthorisationIfNeeded() }
 
+        // App-wide Cmd+V/C/X/A handler. LSUIElement apps have no main menu so
+        // standard Edit-menu shortcuts aren't routed. We catch the Cmd+letter
+        // events and fire the corresponding NSText action via the responder
+        // chain (NSApp.sendAction(_, to: nil, from: nil) walks first-responder
+        // and ancestors). When a focused NSTextField handles it, sendAction
+        // returns true and we consume the event. Otherwise we let it pass.
+        keyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            self?.handleEditShortcut(event) ?? event
+        }
+
         if appState.needsOnboarding {
             showOnboarding()
         }
+    }
+
+    /// Returns nil when the event has been consumed; the original event otherwise.
+    private func handleEditShortcut(_ event: NSEvent) -> NSEvent? {
+        // Require Command, no Ctrl/Option (pure ⌘V etc.)
+        let flags = event.modifierFlags.intersection([.command, .control, .option])
+        guard flags == .command, let chars = event.charactersIgnoringModifiers else {
+            return event
+        }
+        let action: Selector
+        switch chars {
+        case "v": action = #selector(NSText.paste(_:))
+        case "c": action = #selector(NSText.copy(_:))
+        case "x": action = #selector(NSText.cut(_:))
+        case "a": action = #selector(NSText.selectAll(_:))
+        case "z":
+            // Undo / Redo. Cmd+Shift+Z is redo; we use modifierFlags to detect.
+            if event.modifierFlags.contains(.shift) {
+                action = Selector(("redo:"))
+            } else {
+                action = Selector(("undo:"))
+            }
+        default:
+            return event
+        }
+        if NSApp.sendAction(action, to: nil, from: nil) {
+            return nil  // event consumed
+        }
+        return event
     }
 
     // MARK: - UNUserNotificationCenterDelegate

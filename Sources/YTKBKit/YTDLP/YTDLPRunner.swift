@@ -11,8 +11,24 @@ actor YTDLPRunner {
 
     private var ytdlpURL: URL?
     private var chmoddedOnce = false
+    /// Currently-running subprocesses, kept so `terminateAll()` can SIGTERM them
+    /// when the user clicks Stop.
+    private var runningProcesses: [Process] = []
 
     private init() {}
+
+    /// Send SIGTERM to every currently-running yt-dlp process. Used by
+    /// PollingCoordinator.cancel() so blocking subprocess calls return fast
+    /// instead of hanging until natural completion.
+    package func terminateAll() {
+        for p in runningProcesses where p.isRunning {
+            p.terminate()
+        }
+        runningProcesses.removeAll()
+    }
+
+    private func register(_ p: Process) { runningProcesses.append(p) }
+    private func unregister(_ p: Process) { runningProcesses.removeAll { $0 === p } }
 
     func resolveBinary() throws -> URL {
         if let url = ytdlpURL { return url }
@@ -77,39 +93,36 @@ actor YTDLPRunner {
 
     private func runOnce(args: [String]) async throws -> YTDLPResult {
         let binary = try resolveBinary()
+        let process = Process()
+        process.executableURL = binary
+        process.arguments = args
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        var env = ProcessInfo.processInfo.environment
+        if env["HOME"] == nil { env["HOME"] = NSHomeDirectory() }
+        if env["PATH"] == nil { env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin" }
+        process.environment = env
+
+        // Register on the actor BEFORE spawning the detached drain task so
+        // terminateAll() called from another actor method has access to the
+        // process reference.
+        register(process)
+        defer { unregister(process) }
+
         return try await Task.detached(priority: .userInitiated) { () -> YTDLPResult in
-            let process = Process()
-            process.executableURL = binary
-            process.arguments = args
-
-            let stdoutPipe = Pipe()
-            let stderrPipe = Pipe()
-            process.standardOutput = stdoutPipe
-            process.standardError = stderrPipe
-
-            // Inherit minimal env but ensure HOME is set (yt-dlp / cookies need it)
-            var env = ProcessInfo.processInfo.environment
-            if env["HOME"] == nil {
-                env["HOME"] = NSHomeDirectory()
-            }
-            // PATH so yt-dlp's spawned subprocesses (security, ffmpeg if any) work
-            if env["PATH"] == nil {
-                env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"
-            }
-            process.environment = env
-
             do {
                 try process.run()
             } catch {
                 throw YTDLPError.spawnFailed(error)
             }
-
             // Drain pipes concurrently to avoid blocking on full buffers.
             let outData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
             let errData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
-
             process.waitUntilExit()
-
             let stderr = String(data: errData, encoding: .utf8) ?? ""
             return YTDLPResult(
                 exitCode: process.terminationStatus,

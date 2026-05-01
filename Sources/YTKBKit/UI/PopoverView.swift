@@ -1,12 +1,21 @@
 import SwiftUI
+import AppKit
 
 struct PopoverView: View {
     @ObservedObject var appState: AppState
     let onSettings: () -> Void
     let onQuit: () -> Void
 
-    @State private var showingAddChannel = false
     @State private var pollErrorMessage: String?
+
+    // Inline "Add channel" form state
+    @State private var addExpanded: Bool = false
+    @State private var addURL: String = ""
+    @State private var addResolving: Bool = false
+    @State private var addError: String?
+    @State private var addResolvedName: String?
+    @State private var addResolvedChannelId: String?
+    @FocusState private var addURLFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -22,9 +31,6 @@ struct PopoverView: View {
             footerButtons
         }
         .frame(width: 360)
-        .sheet(isPresented: $showingAddChannel) {
-            AddChannelView(appState: appState, isPresented: $showingAddChannel)
-        }
         .onReceive(appState.$lastError) { err in
             pollErrorMessage = err
         }
@@ -174,27 +180,104 @@ struct PopoverView: View {
         }
     }
 
+    @ViewBuilder
+    private var addChannelInline: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                TextField("https://www.youtube.com/@handle", text: $addURL)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($addURLFocused)
+                    .disabled(addResolving || addResolvedName != nil)
+                    .onSubmit {
+                        if addResolvedName == nil {
+                            resolveAdd()
+                        } else {
+                            saveAdd()
+                        }
+                    }
+                if let _ = addResolvedName {
+                    Button {
+                        saveAdd()
+                    } label: {
+                        Image(systemName: "checkmark")
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .help("Добавить")
+                } else {
+                    Button {
+                        resolveAdd()
+                    } label: {
+                        if addResolving {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName: "magnifyingglass")
+                        }
+                    }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(addResolving || addURL.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .help("Проверить URL")
+                }
+                Button {
+                    cancelAdd()
+                } label: {
+                    Image(systemName: "xmark")
+                }
+                .keyboardShortcut(.cancelAction)
+                .help("Отмена")
+            }
+
+            if let resolvedName = addResolvedName {
+                HStack(spacing: 4) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .foregroundStyle(.green)
+                    Text("Найден: \(resolvedName)")
+                        .font(.caption)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+            if let err = addError {
+                Text(err)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .lineLimit(3)
+            }
+        }
+    }
+
     private var footerButtons: some View {
         VStack(spacing: 6) {
-            HStack(spacing: 8) {
-                Button {
-                    showingAddChannel = true
-                } label: {
-                    Label("Добавить канал", systemImage: "plus")
-                        .frame(maxWidth: .infinity)
-                }
+            if addExpanded {
+                addChannelInline
+            } else {
+                HStack(spacing: 8) {
+                    Button {
+                        beginAdd()
+                    } label: {
+                        Label("Добавить канал", systemImage: "plus")
+                            .frame(maxWidth: .infinity)
+                    }
 
-                Button {
-                    Task { await PollingCoordinator.shared.pollAll(appState: appState) }
-                } label: {
-                    Label(
-                        appState.isPolling ? "Проверка идёт…" : "Проверить сейчас",
-                        systemImage: appState.isPolling ? "arrow.triangle.2.circlepath" : "arrow.clockwise"
-                    )
-                    .frame(maxWidth: .infinity)
+                    if appState.isPolling {
+                        Button {
+                            Task { await PollingCoordinator.shared.cancel() }
+                        } label: {
+                            Label("Остановить", systemImage: "stop.circle")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .keyboardShortcut(".", modifiers: .command)
+                        .help("Остановить индексацию (⌘.)")
+                    } else {
+                        Button {
+                            Task { await PollingCoordinator.shared.pollAll(appState: appState) }
+                        } label: {
+                            Label("Проверить сейчас", systemImage: "arrow.clockwise")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .keyboardShortcut("r", modifiers: .command)
+                        .disabled(appState.channelStore.channels.isEmpty || !appState.kbDirectoryAvailable)
+                    }
                 }
-                .keyboardShortcut("r", modifiers: .command)
-                .disabled(appState.isPolling || appState.channelStore.channels.isEmpty || !appState.kbDirectoryAvailable)
             }
 
             Button {
@@ -210,6 +293,73 @@ struct PopoverView: View {
         .padding(.vertical, 10)
     }
 
+    // MARK: - Add channel inline form
+
+    private func beginAdd() {
+        addExpanded = true
+        addError = nil
+        addResolvedName = nil
+        addResolvedChannelId = nil
+        addURL = ""
+        // Pre-fill from clipboard if it looks like a YouTube URL
+        if let candidate = NSPasteboard.general.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           candidate.contains("youtube.com") || candidate.contains("youtu.be") {
+            addURL = candidate
+        }
+        // Defer focus so SwiftUI has finished mounting the TextField
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            addURLFocused = true
+        }
+    }
+
+    private func cancelAdd() {
+        addExpanded = false
+        addURL = ""
+        addError = nil
+        addResolvedName = nil
+        addResolvedChannelId = nil
+        addResolving = false
+    }
+
+    private func resolveAdd() {
+        let raw = addURL.trimmingCharacters(in: .whitespaces)
+        guard !raw.isEmpty else { return }
+        addError = nil
+        addResolvedName = nil
+        addResolvedChannelId = nil
+        addResolving = true
+
+        let config = appState.settings.ytdlpConfig
+        Task {
+            defer { Task { @MainActor in addResolving = false } }
+            do {
+                let resolver = ChannelResolver(runner: YTDLPRunner.shared, config: config)
+                let result = try await resolver.resolveMetadata(channelURL: raw)
+                await MainActor.run {
+                    addResolvedName = result.name
+                    addResolvedChannelId = result.channelId
+                }
+            } catch {
+                await MainActor.run {
+                    self.addError = "\(error)"
+                }
+            }
+        }
+    }
+
+    private func saveAdd() {
+        guard let name = addResolvedName else { return }
+        let channel = TrackedChannel(
+            url: addURL.trimmingCharacters(in: .whitespaces),
+            channelId: addResolvedChannelId,
+            name: name,
+            addedAt: Date()
+        )
+        appState.channelStore.addChannel(channel)
+        cancelAdd()
+        Task { await PollingCoordinator.shared.pollOne(channel: channel, appState: appState) }
+    }
+
     /// Sort priority for the popover list:
     ///   1. Channel currently being polled (so user can see live progress at top)
     ///   2. Channels never polled yet (initial-indexing in progress / queued)
@@ -218,19 +368,15 @@ struct PopoverView: View {
     private var sortedChannels: [TrackedChannel] {
         let pollingURL = appState.pollingChannelURL
         return appState.channelStore.channels.sorted { a, b in
-            // Currently polling at top
             let aPolling = (a.url == pollingURL) ? 0 : 1
             let bPolling = (b.url == pollingURL) ? 0 : 1
             if aPolling != bPolling { return aPolling < bPolling }
-            // Never-polled (initial indexing) next
             let aNew = a.lastPolledAt == nil ? 0 : 1
             let bNew = b.lastPolledAt == nil ? 0 : 1
             if aNew != bNew { return aNew < bNew }
-            // Errors next
             let aErr = (a.lastPollStatus == "error") ? 0 : 1
             let bErr = (b.lastPollStatus == "error") ? 0 : 1
             if aErr != bErr { return aErr < bErr }
-            // Newest poll first
             switch (a.lastPolledAt, b.lastPolledAt) {
             case let (la?, lb?): return la > lb
             case (.some, .none): return true

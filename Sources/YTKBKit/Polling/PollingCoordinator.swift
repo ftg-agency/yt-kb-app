@@ -11,7 +11,19 @@ actor PollingCoordinator {
     static let shared = PollingCoordinator()
 
     private var isPolling = false
+    package let cancellation = CancellationFlag()
     private init() {}
+
+    /// Request that the currently running poll cycle stop ASAP. Sets the
+    /// cancellation flag (checked between videos by PollOperation) AND
+    /// terminates the running yt-dlp subprocess so blocking calls return
+    /// immediately. After cancellation `pollAll` exits cleanly.
+    package func cancel() async {
+        guard isPolling else { return }
+        Logger.shared.info("Cancellation requested by user")
+        cancellation.cancel()
+        await YTDLPRunner.shared.terminateAll()
+    }
 
     /// Poll all enabled channels sequentially. Idempotent: a second concurrent call
     /// returns immediately if a poll is already running.
@@ -21,7 +33,22 @@ actor PollingCoordinator {
             return
         }
         isPolling = true
+        cancellation.reset()
         defer { isPolling = false }
+
+        // Hold a power-management activity so the Mac doesn't sleep mid-cycle
+        // (a 5000-video channel can take hours). Released automatically when
+        // pollAll returns. User can opt out via Settings → Расписание.
+        let preventSleep = await MainActor.run { appState.settings.preventSleepDuringPoll }
+        let activityToken: NSObjectProtocol? = preventSleep
+            ? ProcessInfo.processInfo.beginActivity(
+                options: [.idleSystemSleepDisabled, .userInitiated],
+                reason: "yt-kb: indexing channels"
+            )
+            : nil
+        defer {
+            if let activityToken { ProcessInfo.processInfo.endActivity(activityToken) }
+        }
 
         let (kbRoot, config, kbAvailable) = await MainActor.run {
             appState.refreshKBAvailability()
@@ -61,6 +88,7 @@ actor PollingCoordinator {
         // finish the snapshot, we re-fetch the list and process anything new.
         // This is what makes "click Проверить → add channel mid-poll" work.
         outer: while !botHit {
+            if cancellation.isCancelled { break outer }
             let pending: [TrackedChannel]
             if trigger == .scheduled {
                 let globalSec = await MainActor.run { appState.settings.pollInterval.seconds }
@@ -80,6 +108,7 @@ actor PollingCoordinator {
             if pending.isEmpty { break outer }
 
             for ch in pending {
+                if cancellation.isCancelled { break outer }
                 let priorRetries = await MainActor.run { appState.channelStore.retryEntriesFor(channelURL: ch.url) }
                 let report = await pollOneInternal(
                     channel: ch,
@@ -90,6 +119,7 @@ actor PollingCoordinator {
                 )
                 totalDownloaded += report.counts["ok"] ?? 0
                 processedURLs.insert(ch.url)
+                if report.cancelled { break outer }
                 if report.botCheckHit {
                     botHit = true
                     break outer
@@ -111,7 +141,19 @@ actor PollingCoordinator {
             return
         }
         isPolling = true
+        cancellation.reset()
         defer { isPolling = false }
+
+        let preventSleep = await MainActor.run { appState.settings.preventSleepDuringPoll }
+        let activityToken: NSObjectProtocol? = preventSleep
+            ? ProcessInfo.processInfo.beginActivity(
+                options: [.idleSystemSleepDisabled, .userInitiated],
+                reason: "yt-kb: polling channel"
+            )
+            : nil
+        defer {
+            if let activityToken { ProcessInfo.processInfo.endActivity(activityToken) }
+        }
 
         let (kbRoot, config, kbAvailable) = await MainActor.run {
             appState.refreshKBAvailability()
@@ -180,6 +222,7 @@ actor PollingCoordinator {
             channel: channel,
             kbRoot: kbRoot,
             priorRetries: priorRetries,
+            cancellation: cancellation,
             progress: { [appState, channelURL] event in
                 Task { @MainActor in
                     appState.channelProgress[channelURL] = event

@@ -5,20 +5,56 @@ import UniformTypeIdentifiers
 struct SettingsView: View {
     @ObservedObject var appState: AppState
 
-    var body: some View {
-        TabView {
-            generalTab
-                .tabItem { Label("Базовые", systemImage: "gear") }
-            channelsTab
-                .tabItem { Label("Каналы", systemImage: "list.bullet") }
-            scheduleTab
-                .tabItem { Label("Расписание", systemImage: "clock") }
-            advancedTab
-                .tabItem { Label("Дополнительно", systemImage: "wrench.and.screwdriver") }
-            aboutTab
-                .tabItem { Label("О приложении", systemImage: "info.circle") }
+    enum SettingsSection: String, CaseIterable, Identifiable {
+        case general, channels, schedule, advanced, about
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .general: return "Базовые"
+            case .channels: return "Каналы"
+            case .schedule: return "Расписание"
+            case .advanced: return "Дополнительно"
+            case .about: return "О приложении"
+            }
         }
-        .padding(20)
+        var systemImage: String {
+            switch self {
+            case .general: return "gear"
+            case .channels: return "list.bullet"
+            case .schedule: return "clock"
+            case .advanced: return "wrench.and.screwdriver"
+            case .about: return "info.circle"
+            }
+        }
+    }
+
+    @State private var selection: SettingsSection = .general
+
+    var body: some View {
+        NavigationSplitView {
+            List(SettingsSection.allCases, selection: $selection) { section in
+                Label(section.label, systemImage: section.systemImage)
+                    .tag(section)
+            }
+            .listStyle(.sidebar)
+            .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 240)
+        } detail: {
+            ScrollView {
+                Group {
+                    switch selection {
+                    case .general:  generalTab
+                    case .channels: channelsTab
+                    case .schedule: scheduleTab
+                    case .advanced: advancedTab
+                    case .about:    aboutTab
+                    }
+                }
+                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+            .navigationTitle(selection.label)
+        }
+        .frame(minWidth: 720, minHeight: 480)
     }
 
     private var channelsTab: some View {
@@ -158,7 +194,7 @@ struct SettingsView: View {
                         appState.restartScheduler()
                     }
                 ))
-                Picker("Частота", selection: Binding(
+                Picker("Частота по умолчанию", selection: Binding(
                     get: { appState.settings.pollInterval },
                     set: {
                         appState.settings.setPollInterval($0)
@@ -170,6 +206,21 @@ struct SettingsView: View {
                     }
                 }
                 .disabled(!appState.settings.backgroundPollingEnabled)
+                Text("Эта частота применяется ко всем каналам у которых не задана своя — её можно поменять для каждого канала отдельно во вкладке «Каналы».")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Энергосбережение") {
+                Toggle("Не давать Mac засыпать во время индексации", isOn: Binding(
+                    get: { appState.settings.preventSleepDuringPoll },
+                    set: { appState.settings.setPreventSleepDuringPoll($0) }
+                ))
+                Text("Большой канал на 5000+ видео индексируется несколько часов. Если Mac уходит в сон посередине — индексация прерывается до следующего scheduled-опроса. Когда галочка стоит — приложение удерживает систему от idle-сна на время активной проверки (через ProcessInfo.beginActivity), и отпускает сразу как закончит.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Когда Mac на батарее и закрыт крышкой — это не работает (macOS forced sleep). NSBackgroundActivityScheduler пробует разбудить систему через Power Nap при подключении к питанию.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Section("Тихие часы") {
                 Toggle("Не опрашивать в выбранные часы", isOn: Binding(
