@@ -31,13 +31,13 @@ struct SettingsView: View {
     @State private var selection: SettingsSection = .general
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: .constant(.all)) {
             List(SettingsSection.allCases, selection: $selection) { section in
                 Label(section.label, systemImage: section.systemImage)
                     .tag(section)
             }
             .listStyle(.sidebar)
-            .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 240)
+            .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 260)
         } detail: {
             ScrollView {
                 Group {
@@ -52,9 +52,11 @@ struct SettingsView: View {
                 .padding(20)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
             }
+            .navigationSplitViewColumnWidth(min: 480, ideal: 600)
             .navigationTitle(selection.label)
         }
-        .frame(minWidth: 720, minHeight: 480)
+        .navigationSplitViewStyle(.balanced)
+        .frame(minWidth: 720, idealWidth: 820, minHeight: 480, idealHeight: 560)
     }
 
     private var channelsTab: some View {
@@ -315,15 +317,25 @@ struct SettingsView: View {
             Text("Логи: ~/Library/Logs/yt-kb/yt-kb.log").font(.caption).foregroundStyle(.secondary)
             Text("State: ~/Library/Application Support/yt-kb/state.json").font(.caption).foregroundStyle(.secondary)
             Spacer().frame(height: 8)
-            Button("Открыть лог в Console") {
-                let log = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
-                    .appendingPathComponent("Logs/yt-kb/yt-kb.log")
-                NSWorkspace.shared.open(log)
+            HStack(spacing: 8) {
+                Button("Открыть лог в Console") {
+                    let log = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
+                        .appendingPathComponent("Logs/yt-kb/yt-kb.log")
+                    NSWorkspace.shared.open(log)
+                }
+                Button("Показать onboarding ещё раз") { resetOnboarding() }
             }
             Spacer()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
+    }
+
+    private func resetOnboarding() {
+        UserDefaults.standard.set(false, forKey: "onboardingCompleted")
+        appState.settings.onboardingCompleted = false
+        appState.needsOnboarding = true
+        NotificationCenter.default.post(name: .ytkbShowOnboarding, object: nil)
     }
 
     private var appVersion: String {

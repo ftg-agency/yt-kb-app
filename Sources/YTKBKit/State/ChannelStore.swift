@@ -86,6 +86,12 @@ final class ChannelStore: ObservableObject {
     @Published private(set) var channels: [TrackedChannel] = []
     @Published private(set) var retryQueue: [RetryQueueEntry] = []
 
+    /// True if a state.json file existed at bootstrap time. False on a fresh
+    /// install (or after AppCleaner removed Application Support). AppDelegate
+    /// uses this to decide whether to show onboarding regardless of stale
+    /// UserDefaults values that AppCleaner may have left behind.
+    private(set) var stateFileExistedAtBoot: Bool = false
+
     private let fileURL: URL = {
         let supportDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("yt-kb", isDirectory: true)
@@ -94,7 +100,9 @@ final class ChannelStore: ObservableObject {
     }()
 
     func load() {
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return }
+        let exists = FileManager.default.fileExists(atPath: fileURL.path)
+        stateFileExistedAtBoot = exists
+        guard exists else { return }
         do {
             let data = try Data(contentsOf: fileURL)
             let dec = JSONDecoder()

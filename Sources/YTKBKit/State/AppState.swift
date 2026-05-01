@@ -64,8 +64,17 @@ final class AppState: ObservableObject {
     func bootstrap() {
         settings.load()
         channelStore.load()
-        needsOnboarding = !settings.onboardingCompleted
-        Logger.shared.info("Bootstrap done. channels=\(channelStore.channels.count) onboarding=\(needsOnboarding)")
+        // Onboarding triggers when:
+        //   1. user never completed it (UserDefaults bool), OR
+        //   2. state.json doesn't exist (fresh install — AppCleaner / new machine /
+        //      first install) — even if a stale `onboardingCompleted=true` is
+        //      sitting in UserDefaults from a prior install.
+        let freshInstall = !channelStore.stateFileExistedAtBoot
+        needsOnboarding = !settings.onboardingCompleted || freshInstall
+        if freshInstall && settings.onboardingCompleted {
+            Logger.shared.info("Fresh install detected (no state.json); forcing onboarding despite stale UserDefaults")
+        }
+        Logger.shared.info("Bootstrap done. channels=\(channelStore.channels.count) onboarding=\(needsOnboarding) freshInstall=\(freshInstall)")
     }
 
     /// Restart the background scheduler — call after settings change (interval, enabled).

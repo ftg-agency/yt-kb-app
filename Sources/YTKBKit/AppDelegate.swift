@@ -2,6 +2,10 @@ import AppKit
 import SwiftUI
 import UserNotifications
 
+extension Notification.Name {
+    package static let ytkbShowOnboarding = Notification.Name("io.yt-kb.showOnboarding")
+}
+
 @MainActor
 public final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUserNotificationCenterDelegate {
     let appState = AppState()
@@ -35,6 +39,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency
 
         // Request notification authorisation in the background
         Task { await NotificationsService.shared.requestAuthorisationIfNeeded() }
+
+        // Listen for "show onboarding again" requests from SettingsView
+        NotificationCenter.default.addObserver(
+            forName: .ytkbShowOnboarding,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.showOnboarding() }
+        }
 
         // App-wide Cmd+V/C/X/A handler. LSUIElement apps have no main menu so
         // standard Edit-menu shortcuts aren't routed. We catch the Cmd+letter
@@ -124,15 +137,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency
             return
         }
         let view = SettingsView(appState: appState)
-            .frame(minWidth: 480, minHeight: 320)
         let win = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 360),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            contentRect: NSRect(x: 0, y: 0, width: 820, height: 560),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         win.title = "yt-kb · Настройки"
         win.contentView = NSHostingView(rootView: view)
+        win.contentMinSize = NSSize(width: 720, height: 480)
         win.center()
         win.isReleasedWhenClosed = false
         settingsWindow = win
