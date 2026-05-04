@@ -38,8 +38,8 @@ func consolidatorTests() {
         let kb = makeTmpDir()
         let legacy = kb.appendingPathComponent("gleb-shkut-i0ep9w")
         let canonical = kb.appendingPathComponent("gleb-shkut")
-        try writeChannelFolder(legacy, name: "Gleb Shkut", url: "https://www.youtube.com/channel/UCZmHx1F4DeyMjOxzdi0Ep9w", videoCount: 5)
-        try writeChannelFolder(canonical, name: "Gleb Shkut", url: "https://www.youtube.com/channel/UCZmHx1F4DeyMjOxzdi0Ep9w", videoCount: 1)
+        try writeChannelFolder(legacy, name: "Gleb Shkut", url: "https://www.youtube.com/channel/UCZmHx1F4DeyMjOxzdi0Ep9w", videoCount: 5, idTag: "LEG")
+        try writeChannelFolder(canonical, name: "Gleb Shkut", url: "https://www.youtube.com/channel/UCZmHx1F4DeyMjOxzdi0Ep9w", videoCount: 1, idTag: "CAN")
 
         let channel = makeChannel(name: "Gleb Shkut", url: "https://www.youtube.com/channel/UCZmHx1F4DeyMjOxzdi0Ep9w")
         let report = KBConsolidator.consolidate(kbRoot: kb, channels: [channel])
@@ -49,8 +49,9 @@ func consolidatorTests() {
         try expectFalse(report.outcomes[0].renamed)
         try expectEq(report.outcomes[0].merged, 1)
         try expectFalse(FileManager.default.fileExists(atPath: legacy.path))
-        // Canonical folder now has both: 5 from legacy + 1 originally there.
-        // index.md gets overwritten on dup; that's fine — next poll regenerates.
+        // Canonical folder now has all 6: 1 originally there + 5 from legacy.
+        // index.md from legacy is dropped as a name-dup; that's fine — next
+        // poll regenerates it.
         let mds = try FileManager.default.contentsOfDirectory(atPath: canonical.path).filter { $0.hasSuffix(".md") && $0 != "index.md" }
         try expectEq(mds.count, 6)
     }
@@ -154,7 +155,12 @@ private func makeChannel(name: String, url: String, folderName: String? = nil) -
 
 /// Write a minimal channel folder with an `index.md` AutoDiscovery can parse,
 /// plus `videoCount` dummy `.md` files so KBScanner-style file enumeration sees content.
-private func writeChannelFolder(_ dir: URL, name: String, url: String, videoCount: Int = 1) throws {
+///
+/// `idTag` is folded into the synthesised 11-char video id so two folders in
+/// the same test (legacy + canonical) get distinct ids — otherwise the merge
+/// path's KBMigrator dedup-by-filename would silently drop files and hide the
+/// behaviour we're trying to test.
+private func writeChannelFolder(_ dir: URL, name: String, url: String, videoCount: Int = 1, idTag: String = "VID") throws {
     try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     let index = """
     # \(name)
@@ -165,11 +171,10 @@ private func writeChannelFolder(_ dir: URL, name: String, url: String, videoCoun
     """
     try index.write(to: dir.appendingPathComponent("index.md"), atomically: true, encoding: .utf8)
     for i in 0..<videoCount {
-        // 11-char id placeholder unique per dir+i to avoid KBMigrator-skip collisions
-        // when two folders are merged in the multi-folder test.
-        let prefix = (dir.lastPathComponent + String(i)).replacingOccurrences(of: "-", with: "").prefix(8)
-        let id = (prefix + "AAAAAAAAAAA").prefix(11)
-        let fname = "2024-01-0\(i % 9 + 1)-video-\(id).md"
+        // <tag><index> padded to exactly 11 chars (regex `[\w-]{11}` in
+        // KBScanner). e.g. idTag="LEG" + i=2 → "LEG00000002".
+        let id = String((idTag + String(format: "%011d", i)).prefix(11))
+        let fname = "2024-01-\(String(format: "%02d", (i % 28) + 1))-video-\(id).md"
         let body = """
         ---
         title: "Video \(i)"
