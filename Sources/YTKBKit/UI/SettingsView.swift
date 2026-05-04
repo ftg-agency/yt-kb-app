@@ -141,6 +141,7 @@ struct SettingsView: View {
                         globalLabel: appState.settings.pollInterval.shortLabel,
                         progress: appState.channelProgress[channel.url],
                         isPollingThis: appState.pollingChannelURLs.contains(channel.url),
+                        folderName: resolvedFolderName(for: channel),
                         onSetInterval: { value in
                             var updated = channel
                             updated.pollIntervalSeconds = value
@@ -153,11 +154,38 @@ struct SettingsView: View {
                             appState.channelStore.updateChannel(updated)
                         },
                         onPollOnly: { Task { await PollingCoordinator.shared.pollOne(channel: channel, appState: appState) } },
-                        onRemove: { appState.channelStore.removeChannel(url: channel.url) }
+                        onRemove: { appState.channelStore.removeChannel(url: channel.url) },
+                        onOpenFolder: { openChannelFolder(channel) }
                     )
                     Divider()
                 }
             }
+        }
+    }
+
+    /// Folder name to display in the channel row. Falls back to a fresh slug
+    /// when the channel hasn't been pinned yet (e.g. brand-new install,
+    /// pre-consolidator state.json without `folderName`).
+    private func resolvedFolderName(for channel: TrackedChannel) -> String? {
+        if let pinned = channel.folderName, !pinned.isEmpty { return pinned }
+        let derived = Slugify.slug(channel.name.isEmpty ? "unknown-channel" : channel.name)
+        return derived.isEmpty ? nil : derived
+    }
+
+    private func openChannelFolder(_ channel: TrackedChannel) {
+        guard let kb = appState.settings.kbDirectory else { return }
+        do {
+            _ = try appState.settings.withKBAccess { _ in
+                let dirName = resolvedFolderName(for: channel) ?? ""
+                let dir = dirName.isEmpty ? kb : kb.appendingPathComponent(dirName)
+                if FileManager.default.fileExists(atPath: dir.path) {
+                    NSWorkspace.shared.open(dir)
+                } else {
+                    NSWorkspace.shared.open(kb)
+                }
+            }
+        } catch {
+            Logger.shared.warn("openChannelFolder (Settings) failed: \(error)")
         }
     }
 
@@ -588,6 +616,39 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+
+            // When an update is detected (manually or by the 6h auto-check),
+            // the menu-bar popover shows an "install + restart" button — but
+            // most users live in this Settings window when checking, so
+            // duplicate the install affordance here. Otherwise users see
+            // "Доступна версия 1.7.2" and have nothing to click.
+            if let update = appState.availableUpdate {
+                updateInstallRow(update)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func updateInstallRow(_ update: AppUpdate) -> some View {
+        if let progress = appState.updateInstallProgress {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text(progress.phase)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                ProgressView(value: progress.fraction >= 0 ? progress.fraction : nil)
+                    .progressViewStyle(.linear)
+            }
+        } else {
+            Button {
+                appState.installAvailableUpdate()
+            } label: {
+                Label("Обновить до \(update.version) и перезапустить", systemImage: "arrow.down.circle")
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.regular)
         }
     }
 

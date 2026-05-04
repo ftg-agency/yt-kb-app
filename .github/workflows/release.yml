@@ -94,7 +94,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           tag="${GITHUB_REF##*/}"
+          # `--generate-notes` synthesises a changelog from PR titles between
+          # this tag and the previous one, so we don't need a hand-written body.
           if ! gh release view "$tag" >/dev/null 2>&1; then
-            gh release create "$tag" --title "$tag" --notes "Automated release. See README for install instructions."
+            gh release create "$tag" --title "$tag" --generate-notes
           fi
           gh release upload "$tag" dist/YTKB.dmg --clobber

@@ -1,0 +1,66 @@
+name: Auto-tag on version bump
+
+# Watches main for `Info.plist` version changes. When `CFBundleShortVersionString`
+# advances and no matching tag exists yet, creates `vX.Y.Z` on that commit and
+# pushes it. The push triggers `release.yml`, which builds + signs + notarizes
+# the DMG and creates a GitHub Release with auto-generated notes.
+#
+# Net effect: bump Info.plist in the PR that introduces the user-facing change,
+# merge → release lands automatically, in-app auto-update delivers it within 6h.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # `secrets.GITHUB_TOKEN` is injected as an Actions credential by the
+          # checkout action so the later `git push` of the tag is authorised.
+          persist-credentials: true
+
+      - name: Read CFBundleShortVersionString
+        id: version
+        run: |
+          # Plist is small, structure is stable: extract the <string> right after
+          # the CFBundleShortVersionString key.
+          v=$(grep -A1 '<key>CFBundleShortVersionString</key>' Info.plist \
+                | tail -1 \
+                | sed -E 's|.*<string>([^<]+)</string>.*|\1|')
+          if [[ -z "$v" ]]; then
+            echo "::error::Failed to parse CFBundleShortVersionString from Info.plist"
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Detected version: $v"
+
+      - name: Skip if tag already exists
+        id: check
+        run: |
+          tag="v${{ steps.version.outputs.version }}"
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag $tag already exists — nothing to do."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure git identity
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Create and push tag
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          tag="v${{ steps.version.outputs.version }}"
+          git tag -a "$tag" -m "$tag"
+          git push origin "$tag"
