@@ -100,6 +100,7 @@ package enum KBConsolidator {
                 }
                 let mergeReport = KBMigrator.migrate(from: src, to: targetDir)
                 Logger.shared.info("KBConsolidator: merged \(matches[0].folderName) → \(canonical) (copied=\(mergeReport.copied) skipped=\(mergeReport.skipped) failed=\(mergeReport.failed.count))")
+                removeIfEmpty(src)
                 report.outcomes.append(ChannelOutcome(
                     channelURL: channel.url,
                     folderName: canonical,
@@ -119,6 +120,7 @@ package enum KBConsolidator {
                 let src = kbRoot.appendingPathComponent(match.folderName)
                 let r = KBMigrator.migrate(from: src, to: targetDir)
                 Logger.shared.info("KBConsolidator: merged \(match.folderName) → \(canonical) (copied=\(r.copied) skipped=\(r.skipped) failed=\(r.failed.count))")
+                removeIfEmpty(src)
                 mergedCount += 1
                 failedFiles += r.failed.count
             }
@@ -140,6 +142,19 @@ package enum KBConsolidator {
         var s = url.trimmingCharacters(in: .whitespacesAndNewlines)
         while s.hasSuffix("/") { s.removeLast() }
         return s
+    }
+
+    /// Drop the directory iff it has no remaining contents. KBMigrator cleans
+    /// nested empty subdirs but leaves its `oldRoot` in place — that's the
+    /// right call for the "swap KB-root" flow it was originally written for,
+    /// but consolidation here owns the channel folder and wants it gone after
+    /// a successful merge.
+    private static func removeIfEmpty(_ url: URL) {
+        let fm = FileManager.default
+        guard let contents = try? fm.contentsOfDirectory(atPath: url.path), contents.isEmpty else {
+            return
+        }
+        try? fm.removeItem(at: url)
     }
 
     /// Look up an existing channel folder in `kbRoot` by URL. Used by the

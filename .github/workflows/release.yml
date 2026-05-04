@@ -1,13 +1,13 @@
 name: Build & release
 
-# Builds yt-kb.app and packages it as a DMG when a tag like `v*` is pushed.
+# Builds + signs + notarizes yt-kb.app as a DMG on every push so the latest
+# build is always grabbable from the workflow run's artifacts. Tag pushes
+# (`v*`) additionally publish the DMG as a GitHub Release.
 # Uses GitHub's macos-15 runner (Apple Silicon, Xcode + CommandLineTools both available).
 # Tests run as a custom executable target — no XCTest dependency.
 
 on:
   push:
-    tags:
-      - 'v*'
   workflow_dispatch:
 
 permissions:
