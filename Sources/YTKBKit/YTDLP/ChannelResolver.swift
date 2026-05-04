@@ -24,6 +24,12 @@ package actor ChannelResolver {
         "/playlists", "/community", "/featured", "/about"
     ]
 
+    /// Tabs we enumerate when the user adds a channel "base" URL. Big channels
+    /// like Hormozi publish thousands of shorts that don't appear under
+    /// `/videos`, so we have to scan all three and dedup. `/live` is omitted —
+    /// it's the same content as `/streams` on most channels.
+    private static let enumerableTabs: [String] = ["videos", "shorts", "streams"]
+
     private static func isChannelBase(_ url: String) -> Bool {
         ["/@", "/channel/", "/c/", "/user/"].contains(where: { url.contains($0) })
     }
@@ -31,6 +37,21 @@ package actor ChannelResolver {
     private static func hasChannelTab(_ url: String) -> Bool {
         let stripped = url.hasSuffix("/") ? String(url.dropLast()) : url
         return channelTabSuffixes.contains(where: { stripped.hasSuffix($0) })
+    }
+
+    private static func stripTrailingSlash(_ s: String) -> String {
+        s.hasSuffix("/") ? String(s.dropLast()) : s
+    }
+
+    /// Returns the URLs to enumerate. If user passed a tab-specific URL we
+    /// respect it. Otherwise we expand to videos + shorts + streams so the
+    /// channel's full catalog is covered.
+    package static func enumerationURLs(for url: String) -> [String] {
+        if !isChannelBase(url) || hasChannelTab(url) {
+            return [url]
+        }
+        let base = stripTrailingSlash(url)
+        return enumerableTabs.map { "\(base)/\($0)" }
     }
 
     package static func normaliseChannelURL(_ url: String) -> String {
@@ -42,28 +63,104 @@ package actor ChannelResolver {
     }
 
     func resolveMetadata(channelURL: String) async throws -> ResolvedChannel {
-        let entries = try await fetchEntries(channelURL: channelURL)
-        let videos = await extractVideos(from: entries.entries ?? [])
+        let merged = try await fetchAllTabs(channelURL: channelURL)
         return ResolvedChannel(
-            name: entries.displayName,
-            channelId: entries.channelId ?? entries.uploaderId,
-            channelURL: entries.channelUrl ?? channelURL,
-            videos: videos,
-            reportedTotalCount: entries.playlistCount
+            name: merged.displayName,
+            channelId: merged.channelId,
+            channelURL: merged.channelURL ?? channelURL,
+            videos: merged.videos,
+            reportedTotalCount: merged.reportedTotal
         )
     }
 
     func listVideos(channelURL: String) async throws -> [VideoRef] {
-        let entries = try await fetchEntries(channelURL: channelURL)
-        return await extractVideos(from: entries.entries ?? [])
+        let merged = try await fetchAllTabs(channelURL: channelURL)
+        return merged.videos
     }
 
     /// Same as `listVideos` but also returns YouTube's reported total count
-    /// (or nil). Used by PollOperation to surface "we got X of Y" diagnostics.
+    /// summed across enumerated tabs (or nil). Used by PollOperation to surface
+    /// "we got X of Y" diagnostics.
     func listVideosWithCount(channelURL: String) async throws -> (videos: [VideoRef], reportedTotal: Int?) {
-        let entries = try await fetchEntries(channelURL: channelURL)
-        let videos = await extractVideos(from: entries.entries ?? [])
-        return (videos, entries.playlistCount)
+        let merged = try await fetchAllTabs(channelURL: channelURL)
+        return (merged.videos, merged.reportedTotal)
+    }
+
+    private struct MergedTabs {
+        let videos: [VideoRef]
+        let displayName: String
+        let channelId: String?
+        let channelURL: String?
+        let reportedTotal: Int?
+    }
+
+    /// Tuple sent across actor boundaries from each per-tab Task. Errors are
+    /// logged + reduced to a String inside the task so we don't have to send
+    /// `any Error` (non-Sendable) through the TaskGroup result.
+    private struct TabFetchResult: Sendable {
+        let url: String
+        let response: FlatPlaylistResponse?
+        let errorMessage: String?
+    }
+
+    /// Enumerate every tab in `enumerationURLs` for the given URL in parallel,
+    /// dedup by video_id (preserving first occurrence so chronological order
+    /// from /videos wins for channels where it matters), and merge metadata.
+    private func fetchAllTabs(channelURL: String) async throws -> MergedTabs {
+        let urls = Self.enumerationURLs(for: channelURL)
+        Logger.shared.info("ChannelResolver: enumerating tabs \(urls)")
+
+        var responses: [(url: String, response: FlatPlaylistResponse)] = []
+        var lastErrorMessage: String?
+
+        // Parallel fetch across tabs. A 404 / "no shorts on this channel"
+        // failure is non-fatal — channel may simply not have that tab. We only
+        // surface an error if EVERY tab failed.
+        await withTaskGroup(of: TabFetchResult.self) { group in
+            for u in urls {
+                group.addTask {
+                    do {
+                        let r = try await self.fetchEntries(channelURL: u)
+                        return TabFetchResult(url: u, response: r, errorMessage: nil)
+                    } catch {
+                        Logger.shared.warn("ChannelResolver: tab \(u) failed: \(error)")
+                        return TabFetchResult(url: u, response: nil, errorMessage: "\(error)")
+                    }
+                }
+            }
+            for await item in group {
+                if let r = item.response {
+                    responses.append((item.url, r))
+                } else if let msg = item.errorMessage {
+                    lastErrorMessage = msg
+                }
+            }
+        }
+
+        guard !responses.isEmpty else {
+            throw YTDLPError.decodeFailed(lastErrorMessage ?? "ChannelResolver: all tabs failed")
+        }
+
+        var seen = Set<String>()
+        var merged: [VideoRef] = []
+        var totalReported = 0
+        var hasReported = false
+        for (_, r) in responses {
+            let refs = await extractVideos(from: r.entries ?? [])
+            for v in refs where seen.insert(v.videoId).inserted { merged.append(v) }
+            if let pc = r.playlistCount, pc > 0 { totalReported += pc; hasReported = true }
+        }
+
+        // Channel display metadata: take from the first tab that has it
+        // (typically /videos).
+        let firstWithName = responses.first { $0.response.displayName != "Unknown" }?.response ?? responses[0].response
+        return MergedTabs(
+            videos: merged,
+            displayName: firstWithName.displayName,
+            channelId: firstWithName.channelId ?? firstWithName.uploaderId,
+            channelURL: firstWithName.channelUrl,
+            reportedTotal: hasReported ? totalReported : nil
+        )
     }
 
     /// Player-client cascade for channel listings. Some channels return only

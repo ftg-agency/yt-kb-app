@@ -4,51 +4,97 @@ enum PollTrigger {
     case manual
     case manualSingle
     case scheduled
+    case wake
 }
 
-/// Owns the singleton actor that prevents overlapping polls and aggregates results.
+/// Coordinator for channel polls. Maintains a FIFO queue and a single worker
+/// loop that drains it. Channels enqueued while a worker is running are picked
+/// up by that same worker — so "add a channel mid-poll" works without any
+/// scheduler tick. Cancellation flushes the queue and SIGTERMs subprocesses.
 actor PollingCoordinator {
     static let shared = PollingCoordinator()
 
-    private var isPolling = false
     package let cancellation = CancellationFlag()
+
+    /// FIFO queue of channels waiting to be polled. Deduped by URL. Mutated
+    /// only inside actor-isolated methods.
+    private var queue: [TrackedChannel] = []
+    /// URLs currently being processed (in-flight in the worker's TaskGroup).
+    private var inflight: Set<String> = []
+    /// True iff a worker loop is running. Set synchronously inside ensureWorker
+    /// so concurrent callers never spawn duplicate workers.
+    private var workerRunning = false
+
     private init() {}
 
-    /// Request that the currently running poll cycle stop ASAP. Sets the
-    /// cancellation flag (checked between videos by PollOperation) AND
-    /// terminates the running yt-dlp subprocess so blocking calls return
-    /// immediately. After cancellation `pollAll` exits cleanly.
+    /// Stop the current cycle ASAP. Drops all queued channels, sets the
+    /// cancellation flag (checked between videos by PollOperation) and SIGTERMs
+    /// every running yt-dlp subprocess so blocking calls return immediately.
     package func cancel() async {
-        guard isPolling else { return }
         Logger.shared.info("Cancellation requested by user")
         cancellation.cancel()
+        queue.removeAll()
         await YTDLPRunner.shared.terminateAll()
     }
 
-    /// Poll all enabled channels sequentially. Idempotent: a second concurrent call
-    /// returns immediately if a poll is already running.
-    func pollAll(appState: AppState, trigger: PollTrigger = .manual) async {
-        if isPolling {
-            Logger.shared.info("pollAll: skipped (already polling)")
-            return
-        }
-        isPolling = true
-        cancellation.reset()
-        defer { isPolling = false }
+    /// Enqueue a single channel. Always succeeds — if a worker is already
+    /// running, the channel joins the queue and is processed in turn. The
+    /// previous behaviour (silent drop on `isPolling==true`) caused channels
+    /// added mid-cycle to never be polled until the next scheduler tick.
+    func pollOne(channel: TrackedChannel, appState: AppState) async {
+        enqueueIfNeeded(channel)
+        publishQueueSize(appState: appState)
+        ensureWorker(appState: appState, trigger: .manualSingle)
+    }
 
-        // Hold a power-management activity so the Mac doesn't sleep mid-cycle
-        // (a 5000-video channel can take hours). Released automatically when
-        // pollAll returns. User can opt out via Settings → Расписание.
-        let preventSleep = await MainActor.run { appState.settings.preventSleepDuringPoll }
-        let activityToken: NSObjectProtocol? = preventSleep
-            ? ProcessInfo.processInfo.beginActivity(
-                options: [.idleSystemSleepDisabled, .userInitiated],
-                reason: "yt-kb: indexing channels"
-            )
-            : nil
-        defer {
-            if let activityToken { ProcessInfo.processInfo.endActivity(activityToken) }
+    /// Enqueue every eligible channel in a single batch. For `.scheduled` only
+    /// channels whose per-channel interval is due are added.
+    func pollAll(appState: AppState, trigger: PollTrigger = .manual) async {
+        let channels = await MainActor.run { () -> [TrackedChannel] in
+            switch trigger {
+            case .scheduled, .wake:
+                let globalSec = appState.settings.pollInterval.seconds
+                let now = Date()
+                return appState.channelStore.channels.filter { ch in
+                    ch.enabled && ch.isDueForScheduledPoll(now: now, globalSeconds: globalSec)
+                }
+            case .manual, .manualSingle:
+                return appState.channelStore.channels.filter { $0.enabled }
+            }
         }
+        for ch in channels { enqueueIfNeeded(ch) }
+        publishQueueSize(appState: appState)
+        ensureWorker(appState: appState, trigger: trigger)
+    }
+
+    private func enqueueIfNeeded(_ channel: TrackedChannel) {
+        if inflight.contains(channel.url) { return }
+        if queue.contains(where: { $0.url == channel.url }) { return }
+        queue.append(channel)
+    }
+
+    private func publishQueueSize(appState: AppState) {
+        let count = queue.count
+        Task { @MainActor in appState.queuedChannelCount = count }
+    }
+
+    /// Ensure exactly one worker loop is running. If `workerRunning` is already
+    /// true the current worker will pick up newly-queued items naturally.
+    private func ensureWorker(appState: AppState, trigger: PollTrigger) {
+        if workerRunning { return }
+        workerRunning = true
+        Task { [weak self] in
+            await self?.runWorker(appState: appState, initialTrigger: trigger)
+        }
+    }
+
+    /// Drain the queue until empty (or cancelled / bot-checked). Holds power
+    /// activity, KB security-scoped access, and publishes the polling state.
+    /// Channels enqueued during awaits inside this loop ARE picked up — the
+    /// `while !queue.isEmpty` check re-evaluates after every batch.
+    private func runWorker(appState: AppState, initialTrigger: PollTrigger) async {
+        defer { workerRunning = false }
+        cancellation.reset()
 
         let (kbRoot, config, kbAvailable) = await MainActor.run {
             appState.refreshKBAvailability()
@@ -56,13 +102,26 @@ actor PollingCoordinator {
         }
         guard let kbRoot else {
             await MainActor.run { appState.lastError = "База знаний не настроена" }
+            queue.removeAll()
+            await MainActor.run { appState.queuedChannelCount = 0 }
             return
         }
         guard kbAvailable else {
             await MainActor.run { appState.lastError = "Папка базы знаний недоступна (диск отключён?)" }
-            Logger.shared.warn("pollAll: KB unreachable, polling paused until directory comes back")
+            Logger.shared.warn("runWorker: KB unreachable, polling paused until directory comes back")
+            queue.removeAll()
+            await MainActor.run { appState.queuedChannelCount = 0 }
             return
         }
+
+        let preventSleep = await MainActor.run { appState.settings.preventSleepDuringPoll }
+        let activityToken: NSObjectProtocol? = preventSleep
+            ? ProcessInfo.processInfo.beginActivity(
+                options: [.idleSystemSleepDisabled, .userInitiated],
+                reason: "yt-kb: indexing channels"
+            )
+            : nil
+        defer { if let activityToken { ProcessInfo.processInfo.endActivity(activityToken) } }
 
         await MainActor.run {
             appState.isPolling = true
@@ -74,6 +133,7 @@ actor PollingCoordinator {
                 appState.pollingChannelURL = nil
                 appState.pollingChannelURLs.removeAll()
                 appState.channelProgress.removeAll()
+                appState.queuedChannelCount = 0
             }
         }
 
@@ -83,44 +143,23 @@ actor PollingCoordinator {
         let op = PollOperation(runner: YTDLPRunner.shared, config: config)
         var totalDownloaded = 0
         var botHit = false
-        var processedURLs: Set<String> = []
-        let maxConcurrent = await MainActor.run { appState.settings.maxConcurrentChannels }
 
-        // Outer loop picks up channels added DURING this poll cycle. After we
-        // finish the snapshot, we re-fetch the list and process anything new.
-        // This is what makes "click Проверить → add channel mid-poll" work.
-        outer: while !botHit {
-            if cancellation.isCancelled { break outer }
-            let pending: [TrackedChannel]
-            if trigger == .scheduled {
-                let globalSec = await MainActor.run { appState.settings.pollInterval.seconds }
-                let now = Date()
-                pending = await MainActor.run {
-                    appState.channelStore.channels.filter { ch in
-                        ch.enabled
-                            && !processedURLs.contains(ch.url)
-                            && ch.isDueForScheduledPoll(now: now, globalSeconds: globalSec)
-                    }
-                }
-            } else {
-                pending = await MainActor.run {
-                    appState.channelStore.channels.filter { $0.enabled && !processedURLs.contains($0.url) }
-                }
-            }
-            if pending.isEmpty { break outer }
+        // Outer loop drains the queue. We may exit it briefly to await on
+        // post-cycle housekeeping, then re-check — channels enqueued during
+        // those awaits would otherwise hang until the next manual trigger.
+        drain: while true {
+            while !queue.isEmpty {
+                if cancellation.isCancelled { queue.removeAll(); break drain }
+                let maxConcurrent = await MainActor.run { appState.settings.maxConcurrentChannels }
+                let batchSize = min(maxConcurrent, queue.count)
+                let batch = Array(queue.prefix(batchSize))
+                queue.removeFirst(batchSize)
+                for ch in batch { inflight.insert(ch.url) }
+                publishQueueSize(appState: appState)
 
-            // Process up to `maxConcurrent` channels in parallel via TaskGroup.
-            // Each yt-dlp pipeline runs in its own subprocess so OS-level
-            // parallelism is real. Bounded by user setting (default 2) to
-            // avoid YouTube rate-limiting from too many simultaneous requests.
-            let batches = stride(from: 0, to: pending.count, by: maxConcurrent).map {
-                Array(pending[$0..<min($0 + maxConcurrent, pending.count)])
-            }
-            for batch in batches {
-                if cancellation.isCancelled { break outer }
                 let reports = await withTaskGroup(of: PollChannelReport.self, returning: [PollChannelReport].self) { group in
                     for ch in batch {
-                        group.addTask {
+                        group.addTask { [self] in
                             let priorRetries = await MainActor.run { appState.channelStore.retryEntriesFor(channelURL: ch.url) }
                             return await self.pollOneInternal(
                                 channel: ch,
@@ -135,87 +174,32 @@ actor PollingCoordinator {
                     for await r in group { collected.append(r) }
                     return collected
                 }
-                for ch in batch { processedURLs.insert(ch.url) }
+                for ch in batch { inflight.remove(ch.url) }
                 for report in reports {
                     totalDownloaded += report.counts["ok"] ?? 0
-                    if report.cancelled { break outer }
-                    if report.botCheckHit { botHit = true; break outer }
+                    if report.botCheckHit { botHit = true; queue.removeAll(); break drain }
                 }
+                publishQueueSize(appState: appState)
             }
-        }
 
-        await postSummaryNotification(
-            appState: appState,
-            trigger: trigger,
-            totalDownloaded: totalDownloaded,
-            botHit: botHit
-        )
-    }
-
-    func pollOne(channel: TrackedChannel, appState: AppState) async {
-        if isPolling {
-            Logger.shared.info("pollOne: skipped (already polling)")
-            return
-        }
-        isPolling = true
-        cancellation.reset()
-        defer { isPolling = false }
-
-        let preventSleep = await MainActor.run { appState.settings.preventSleepDuringPoll }
-        let activityToken: NSObjectProtocol? = preventSleep
-            ? ProcessInfo.processInfo.beginActivity(
-                options: [.idleSystemSleepDisabled, .userInitiated],
-                reason: "yt-kb: polling channel"
-            )
-            : nil
-        defer {
-            if let activityToken { ProcessInfo.processInfo.endActivity(activityToken) }
-        }
-
-        let (kbRoot, config, kbAvailable) = await MainActor.run {
-            appState.refreshKBAvailability()
-            return (appState.settings.kbDirectory, appState.settings.ytdlpConfig, appState.kbDirectoryAvailable)
-        }
-        guard let kbRoot else {
-            await MainActor.run { appState.lastError = "База знаний не настроена" }
-            return
-        }
-        guard kbAvailable else {
-            await MainActor.run { appState.lastError = "Папка базы знаний недоступна" }
-            return
-        }
-
-        await MainActor.run {
-            appState.isPolling = true
-            appState.lastError = nil
-        }
-        defer {
-            Task { @MainActor in
-                appState.isPolling = false
-                appState.pollingChannelURL = nil
-                appState.pollingChannelURLs.removeAll()
-                appState.channelProgress.removeAll()
+            // Stamp last successful scheduled run for the wake observer.
+            if initialTrigger == .scheduled || initialTrigger == .wake {
+                let now = Date()
+                await MainActor.run { appState.settings.setLastScheduledRunAt(now) }
             }
+            // Re-check queue after that await — anything enqueued during the
+            // suspension is processed before we exit and clear workerRunning.
+            if queue.isEmpty { break drain }
         }
 
-        let started = kbRoot.startAccessingSecurityScopedResource()
-        defer { if started { kbRoot.stopAccessingSecurityScopedResource() } }
-
-        let op = PollOperation(runner: YTDLPRunner.shared, config: config)
-        let priorRetries = await MainActor.run { appState.channelStore.retryEntriesFor(channelURL: channel.url) }
-        let report = await pollOneInternal(
-            channel: channel,
-            op: op,
-            kbRoot: kbRoot,
-            appState: appState,
-            priorRetries: priorRetries
-        )
-        await postSummaryNotification(
-            appState: appState,
-            trigger: .manualSingle,
-            totalDownloaded: report.counts["ok"] ?? 0,
-            botHit: report.botCheckHit
-        )
+        // Fire-and-forget summary; the worker's defer releases the slot
+        // immediately so a pollOne arriving right now spins up a fresh worker.
+        let trigger = initialTrigger
+        let dl = totalDownloaded
+        let bot = botHit
+        Task { [self] in
+            await self.postSummaryNotification(appState: appState, trigger: trigger, totalDownloaded: dl, botHit: bot)
+        }
     }
 
     private func pollOneInternal(
@@ -229,7 +213,6 @@ actor PollingCoordinator {
         await MainActor.run {
             appState.pollingChannelURL = channelURL
             appState.pollingChannelURLs.insert(channelURL)
-            // Seed progress immediately so the row shows "starting…" without flicker
             appState.channelProgress[channelURL] = ChannelProgress(
                 phase: .resolving,
                 current: 0, total: 0, label: nil,
@@ -242,6 +225,8 @@ actor PollingCoordinator {
             }
         }
         Logger.shared.info("Polling \(channel.name) (\(channel.url))")
+        let isInitial = channel.lastPolledAt == nil
+        let throttle = NotificationThrottle.shared
         let report = await op.pollChannel(
             channel: channel,
             kbRoot: kbRoot,
@@ -251,13 +236,39 @@ actor PollingCoordinator {
                 Task { @MainActor in
                     appState.channelProgress[channelURL] = event
                 }
+            },
+            onIndexed: { [appState, channel, isInitial] indexed in
+                // Per-video notification + recent-video record. Suppressed for
+                // the channel's first ever poll (initial backfill of 500 old
+                // videos isn't "new content" to the user).
+                let event = RecentVideo(
+                    videoId: indexed.videoId,
+                    title: indexed.title,
+                    channelURL: channel.url,
+                    channelName: channel.name,
+                    indexedAt: Date()
+                )
+                Task { @MainActor in
+                    appState.channelStore.appendRecentVideo(event)
+                }
+                if !isInitial {
+                    Task {
+                        let allowed = await throttle.shouldPost(channelURL: channel.url)
+                        guard allowed else { return }
+                        await NotificationsService.shared.postNewVideo(
+                            channelName: channel.name,
+                            channelURL: channel.url,
+                            videoTitle: indexed.title,
+                            appState: appState
+                        )
+                    }
+                }
             }
         )
         await MainActor.run {
             appState.channelProgress[channelURL] = nil
         }
 
-        // Apply retry-queue mutations
         let resolved = report.resolvedRetries
         let newEntries = report.newRetries
         let updatedEntries = report.updatedRetries
@@ -267,10 +278,19 @@ actor PollingCoordinator {
         if let total = report.reportedChannelTotal {
             built.videoCount = total
         }
-        if built.folderName == nil, let resolved = report.resolvedFolderName {
-            built.folderName = resolved
+        if built.folderName == nil, let resolvedFolder = report.resolvedFolderName {
+            built.folderName = resolvedFolder
         }
         let okCount = report.counts["ok"] ?? 0
+        let skippedCount = report.counts["skipped"] ?? 0
+        built.lastPollDownloaded = okCount
+        built.lastPollSkipped = skippedCount
+        // Count actual files on disk so the X/Y badge reflects reality after
+        // each cycle — not just incremental deltas. Cheap (one folder enum).
+        if let folder = built.folderName {
+            let dir = kbRoot.appendingPathComponent(folder)
+            built.indexedCount = KBScanner.countIndexedVideos(in: dir)
+        }
         if let err = report.firstError, okCount == 0 {
             built.lastPollStatus = "error"
             built.lastPollError = String(err.prefix(200))
@@ -291,7 +311,6 @@ actor PollingCoordinator {
             if okCount == 0, let err = errSnapshot {
                 appState.lastError = err
             }
-            // Trigger error notification once per channel
             if okCount == 0, let err = errSnapshot, !report.botCheckHit {
                 let name = channel.name
                 let url = channel.url
@@ -314,8 +333,30 @@ actor PollingCoordinator {
             await NotificationsService.shared.postBotCheck(appState: appState)
             return
         }
-        if trigger == .scheduled, totalDownloaded > 0 {
+        // Manual triggers: no cycle-summary banner — user already sees the
+        // result in the popover. Per-video banners (sent during the cycle)
+        // are the visible feedback.
+        guard trigger == .scheduled || trigger == .wake else { return }
+        if totalDownloaded > 0 {
             await NotificationsService.shared.postSuccess(downloaded: totalDownloaded, appState: appState)
         }
+    }
+}
+
+/// Throttles per-channel new-video banners so the first big incremental burst
+/// doesn't spam Notification Centre. One banner per channel per minute; further
+/// videos in the same window are still recorded into the recent-videos list.
+actor NotificationThrottle {
+    static let shared = NotificationThrottle()
+    private var lastSent: [String: Date] = [:]
+    private let minInterval: TimeInterval = 60
+
+    func shouldPost(channelURL: String) -> Bool {
+        let now = Date()
+        if let last = lastSent[channelURL], now.timeIntervalSince(last) < minInterval {
+            return false
+        }
+        lastSent[channelURL] = now
+        return true
     }
 }

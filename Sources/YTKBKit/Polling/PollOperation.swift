@@ -13,9 +13,9 @@ struct PollChannelReport {
     var firstError: String?
     var botCheckHit: Bool = false
     var cancelled: Bool = false
-    /// YouTube-reported total video count. Captured during channel resolve,
-    /// used by PollingCoordinator to update TrackedChannel.videoCount so the
-    /// widget can show "4934 видео" persistently.
+    /// YouTube-reported total video count (sum across /videos + /shorts +
+    /// /streams). Captured during channel resolve, used by PollingCoordinator
+    /// to update TrackedChannel.videoCount.
     var reportedChannelTotal: Int?
     /// New entries to add to retry_queue (no_subs videos seen for the first time).
     var newRetries: [RetryQueueEntry] = []
@@ -28,6 +28,14 @@ struct PollChannelReport {
     /// channel had no pinned `folderName` yet — coordinator persists it onto
     /// `TrackedChannel.folderName` so subsequent polls reuse the same folder.
     var resolvedFolderName: String?
+}
+
+/// Lightweight signal emitted from PollOperation each time a video is
+/// successfully transcribed and written to disk. PollingCoordinator turns these
+/// into recent-videos entries and (for non-initial cycles) per-video banners.
+package struct IndexedVideoEvent: Sendable {
+    package let videoId: String
+    package let title: String?
 }
 
 actor PollOperation {
@@ -54,7 +62,8 @@ actor PollOperation {
         kbRoot: URL,
         priorRetries: [RetryQueueEntry],
         cancellation: CancellationFlag,
-        progress: @Sendable (ChannelProgress) -> Void
+        progress: @Sendable (ChannelProgress) -> Void,
+        onIndexed: (@Sendable (IndexedVideoEvent) -> Void)? = nil
     ) async -> PollChannelReport {
         var report = PollChannelReport()
         let isInitial = channel.lastPolledAt == nil
@@ -102,6 +111,9 @@ actor PollOperation {
             ))
             let outcome = await processVideo(ref: ref, kbRoot: kbRoot, channel: channel, report: &report)
             applyOutcome(outcome, ref: ref, channelURL: channel.url, channelName: channel.name, isRetry: false, report: &report)
+            if case .ok = outcome {
+                onIndexed?(IndexedVideoEvent(videoId: ref.videoId, title: ref.title))
+            }
             if report.botCheckHit { return report }
         }
 
@@ -123,6 +135,9 @@ actor PollOperation {
             ))
             let outcome = await processVideo(ref: ref, kbRoot: kbRoot, channel: channel, report: &report)
             applyOutcome(outcome, ref: ref, channelURL: channel.url, channelName: channel.name, isRetry: true, report: &report, priorEntry: entry)
+            if case .ok = outcome {
+                onIndexed?(IndexedVideoEvent(videoId: ref.videoId, title: ref.title))
+            }
             if report.botCheckHit { return report }
         }
 

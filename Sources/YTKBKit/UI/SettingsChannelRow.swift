@@ -39,14 +39,15 @@ struct SettingsChannelRow: View {
                         Text(channel.name)
                             .font(.body)
                             .foregroundStyle(channel.enabled ? .primary : .secondary)
-                        if let count = channel.videoCount, count > 0 {
-                            Text("\(count) видео")
+                        if let countLabel = videoCountLabel {
+                            Text(countLabel)
                                 .font(.caption.monospacedDigit())
                                 .foregroundStyle(.secondary)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 1)
                                 .background(Color.secondary.opacity(0.12))
                                 .cornerRadius(4)
+                                .help(videoCountTooltip)
                         }
                     }
                     Text(channel.url)
@@ -153,7 +154,7 @@ struct SettingsChannelRow: View {
                 .progressViewStyle(.linear)
                 .tint(progressTint(p))
             if let reported = p.reportedChannelTotal, reported > 0, p.total > 0, reported > p.total + 5 {
-                Text("На канале всего \(reported) видео — yt-dlp пока видит \(p.total). Остальное подтянется на следующих опросах.")
+                Text("\(p.total) из \(reported) — остальное подтянется на следующих проверках.")
                     .font(.caption2)
                     .foregroundStyle(.orange)
                     .lineLimit(2)
@@ -189,5 +190,26 @@ struct SettingsChannelRow: View {
         if interval < 3600 { return "проверен \(Int(interval / 60)) мин назад" }
         if interval < 86400 { return "проверен \(Int(interval / 3600)) ч назад" }
         return "проверен \(Int(interval / 86400)) д назад"
+    }
+
+    private var videoCountLabel: String? {
+        let indexed = channel.indexedCount
+        let total = channel.videoCount ?? 0
+        if total > 0 && indexed > 0 && indexed < total {
+            return "\(indexed) / \(total)"
+        }
+        if total > 0 { return "\(total)" }
+        if indexed > 0 { return "\(indexed)" }
+        return nil
+    }
+
+    private var videoCountTooltip: String {
+        let indexed = channel.indexedCount
+        let total = channel.videoCount ?? 0
+        if total > 0 && indexed > 0 {
+            return "Скачано \(indexed) из \(total) видео"
+        }
+        if total > 0 { return "На канале \(total) видео" }
+        return "Скачано \(indexed) видео"
     }
 }
