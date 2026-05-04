@@ -192,7 +192,7 @@ struct SettingsView: View {
     private func reindexAll() {
         let alert = NSAlert()
         alert.messageText = "Переиндексировать все каналы?"
-        alert.informativeText = "Каналы будут помечены как «не опрашивались» и пройдут полный цикл проверки. Уже скачанные транскрипты не будут перезаписаны (idempotency по video_id). Подходит когда нужно дочистить пропущенное и заново посмотреть retry-очередь."
+        alert.informativeText = "Каналы будут проверены заново. Уже скачанные транскрипты не перезапишутся — только подтянем то, что пропустили."
         alert.addButton(withTitle: "Переиндексировать")
         alert.addButton(withTitle: "Отмена")
         alert.alertStyle = .informational
@@ -233,7 +233,7 @@ struct SettingsView: View {
                     }
                 }
             }
-            Section("Cookies") {
+            Section("Браузер для входа в YouTube") {
                 Picker("Браузер", selection: Binding(
                     get: { appState.settings.browser },
                     set: { appState.settings.setBrowser($0) }
@@ -242,15 +242,24 @@ struct SettingsView: View {
                         Text(choice.displayName).tag(choice)
                     }
                 }
-                Text("yt-dlp возьмёт cookies из выбранного браузера. macOS попросит разрешение на доступ к ключам один раз.")
+                Text("Нужно чтобы YouTube не блокировал доступ. Войдите в YouTube в этом браузере один раз.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Section("Уведомления") {
-                Toggle("Показывать нотификации (новые видео, ошибки)", isOn: Binding(
+                Toggle("Сообщать о новых видео и ошибках", isOn: Binding(
                     get: { appState.settings.notificationsEnabled },
                     set: { appState.settings.setNotificationsEnabled($0) }
                 ))
+            }
+            Section("Запуск") {
+                Toggle("Запускать при входе в систему", isOn: Binding(
+                    get: { appState.settings.launchAtLogin },
+                    set: { LoginItemController.setEnabled($0, settings: appState.settings) }
+                ))
+                Text("Чтобы новые видео индексировались в фоне без вашего участия.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -291,7 +300,7 @@ struct SettingsView: View {
                     ),
                     in: 1...4
                 )
-                Text("Сколько каналов опрашивать одновременно во время «Проверить сейчас» и scheduled-опроса. Каждый канал — отдельный yt-dlp subprocess. Больше = быстрее на батч-опросах, но повышает риск bot-detection от YouTube. По умолчанию 2.")
+                Text("Больше — быстрее, но YouTube может временно ограничить доступ.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -300,10 +309,7 @@ struct SettingsView: View {
                     get: { appState.settings.preventSleepDuringPoll },
                     set: { appState.settings.setPreventSleepDuringPoll($0) }
                 ))
-                Text("Большой канал на 5000+ видео индексируется несколько часов. Если Mac уходит в сон посередине — индексация прерывается до следующего scheduled-опроса. Когда галочка стоит — приложение удерживает систему от idle-сна на время активной проверки (через ProcessInfo.beginActivity), и отпускает сразу как закончит.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text("Когда Mac на батарее и закрыт крышкой — это не работает (macOS forced sleep). NSBackgroundActivityScheduler пробует разбудить систему через Power Nap при подключении к питанию.")
+                Text("Если ноутбук закрыт и работает от батареи — macOS всё равно может приостановить работу.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -358,7 +364,7 @@ struct SettingsView: View {
                         .monospacedDigit()
                         .frame(width: 50, alignment: .trailing)
                 }
-                Text("Помогает обходить bot-detection при массовом скачивании.")
+                Text("Снижает шанс что YouTube начнёт временно ограничивать доступ.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -407,8 +413,8 @@ struct SettingsView: View {
                 }
             }
             if !appState.channelStore.retryQueue.isEmpty {
-                Section("Retry-очередь") {
-                    Text("В очереди: \(appState.channelStore.retryQueue.count) видео без субтитров — будут повторно проверены автоматически (см. §retry).")
+                Section("Видео в ожидании субтитров") {
+                    Text("В ожидании: \(appState.channelStore.retryQueue.count). YouTube не сразу публикует автосабы — мы проверим эти видео ещё несколько раз в ближайшие сутки.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

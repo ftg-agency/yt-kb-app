@@ -48,6 +48,9 @@ final class AppState: ObservableObject {
     @Published var pollingChannelURL: String?
     /// Set of channel URLs currently being polled (concurrency-aware).
     @Published var pollingChannelURLs: Set<String> = []
+    /// Channels waiting in the coordinator's queue (not yet started). Drives
+    /// the small "+N в очереди" hint in the popover footer.
+    @Published var queuedChannelCount: Int = 0
     @Published var lastError: String?
     @Published var needsOnboarding: Bool = false
 

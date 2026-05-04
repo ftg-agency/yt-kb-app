@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import UserNotifications
+import ServiceManagement
 
 extension Notification.Name {
     package static let ytkbShowOnboarding = Notification.Name("io.yt-kb.showOnboarding")
@@ -23,6 +24,23 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency
 
         menuBarController = MenuBarController(appState: appState, delegate: self)
         appState.showPopover = { [weak self] in self?.menuBarController?.showPopover() }
+
+        // Sync the launch-at-login toggle with system truth, then opt the user
+        // in by default the first time the app boots from a location where
+        // SMAppService.register() actually succeeds (i.e. /Applications).
+        // We only flip `launchAtLoginPrompted` after success so an early run
+        // from a temp build dir doesn't permanently skip the auto-enable.
+        LoginItemController.refreshState(settings: appState.settings)
+        if !appState.settings.launchAtLoginPrompted {
+            LoginItemController.setEnabled(true, settings: appState.settings)
+            if appState.settings.launchAtLogin {
+                appState.settings.setLaunchAtLoginPrompted(true)
+            }
+        }
+
+        // Wake-from-sleep catch-up: if a scheduled tick was missed while the
+        // Mac slept, run it now.
+        registerWakeObserver()
 
         // Initial KB availability check
         appState.refreshKBAvailability()
@@ -163,7 +181,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency
         win.title = "yt-kb · Настройки"
         win.contentView = NSHostingView(rootView: view)
         win.contentMinSize = NSSize(width: 720, height: 480)
-        win.collectionBehavior = [.fullScreenPrimary]
+        // No .fullScreenPrimary: a menu-bar app shouldn't let Settings hide
+        // the menu bar — the user couldn't get back to the popover.
+        win.collectionBehavior = [.fullScreenAuxiliary]
         win.center()
         win.isReleasedWhenClosed = false
         settingsWindow = win
@@ -199,5 +219,59 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency
     func quit() {
         Logger.shared.info("Quitting")
         NSApp.terminate(nil)
+    }
+
+    // MARK: - Wake observer
+
+    private func registerWakeObserver() {
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor in
+                guard self.appState.settings.backgroundPollingEnabled else { return }
+                if self.appState.settings.isInQuietHours() { return }
+                let interval = self.appState.settings.pollInterval.seconds
+                let last = self.appState.settings.lastScheduledRunAt ?? .distantPast
+                guard Date().timeIntervalSince(last) >= interval else { return }
+                Logger.shared.info("Wake observer: running catch-up scheduled poll (last=\(last))")
+                await PollingCoordinator.shared.pollAll(appState: self.appState, trigger: .wake)
+            }
+        }
+    }
+}
+
+/// Wraps SMAppService.mainApp for the launch-at-login toggle. macOS 13+ only;
+/// the legacy SMLoginItemSetEnabled API is deprecated. Failure to register is
+/// non-fatal — we just leave the toggle off and log.
+@MainActor
+enum LoginItemController {
+    static func refreshState(settings: Settings) {
+        let registered = SMAppService.mainApp.status == .enabled
+        if settings.launchAtLogin != registered {
+            settings.setLaunchAtLogin(registered)
+        }
+    }
+
+    static func setEnabled(_ enabled: Bool, settings: Settings) {
+        do {
+            if enabled {
+                if SMAppService.mainApp.status != .enabled {
+                    try SMAppService.mainApp.register()
+                }
+            } else {
+                if SMAppService.mainApp.status == .enabled {
+                    try SMAppService.mainApp.unregister()
+                }
+            }
+            settings.setLaunchAtLogin(enabled)
+            Logger.shared.info("LoginItem: set to \(enabled)")
+        } catch {
+            Logger.shared.warn("LoginItem toggle failed: \(error)")
+            // Reflect actual system state so the toggle doesn't lie
+            settings.setLaunchAtLogin(SMAppService.mainApp.status == .enabled)
+        }
     }
 }

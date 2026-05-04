@@ -5,6 +5,29 @@ package enum KBScanner {
         pattern: #"-([\w-]{11})\.md$"#
     )
 
+    /// Count the number of indexed video files inside one channel folder.
+    /// Used to populate `TrackedChannel.indexedCount` after each poll cycle so
+    /// the popover can show "X / Y" without scanning on every redraw.
+    package static func countIndexedVideos(in folder: URL) -> Int {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: folder.path) else { return 0 }
+        guard let enumerator = fm.enumerator(
+            at: folder,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
+        ) else { return 0 }
+        var count = 0
+        for case let url as URL in enumerator {
+            guard url.pathExtension == "md", url.lastPathComponent != "index.md" else { continue }
+            let name = url.lastPathComponent
+            let range = NSRange(name.startIndex..<name.endIndex, in: name)
+            if videoIdRegex.firstMatch(in: name, options: [], range: range) != nil {
+                count += 1
+            }
+        }
+        return count
+    }
+
     /// Walk the entire KB tree and return {video_id: md_path} for all known videos.
     /// Filename invariant: `<date>-<slug>-<11charID>.md`.
     package static func scanExistingIds(in kbRoot: URL) -> [String: URL] {

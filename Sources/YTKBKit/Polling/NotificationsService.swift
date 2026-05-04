@@ -67,6 +67,24 @@ final class NotificationsService {
         )
     }
 
+    /// Per-video banner: "Channel X · Video title". Throttled upstream by
+    /// NotificationThrottle (1/min/channel) so a burst of incremental videos
+    /// doesn't flood Notification Centre.
+    func postNewVideo(channelName: String, channelURL: String, videoTitle: String?, appState: AppState) async {
+        let title = "Новое видео · \(channelName)"
+        let body = videoTitle?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Транскрипт сохранён"
+        // Unique identifier per fire so multiple banners stack instead of
+        // replacing each other in Notification Centre.
+        let identifier = "io.yt-kb.notif.new.\(UUID().uuidString)"
+        await post(
+            title: title,
+            body: body,
+            identifier: identifier,
+            channelURL: channelURL,
+            appState: appState
+        )
+    }
+
     func postChannelError(channelName: String, channelURL: String, message: String, appState: AppState) async {
         await post(
             title: "yt-kb · ошибка",

@@ -28,6 +28,10 @@ struct PopoverView: View {
             }
             Divider()
             channelSection
+            if !appState.channelStore.recentVideos.isEmpty {
+                Divider()
+                recentVideosSection
+            }
             Divider()
             footerButtons
         }
@@ -100,12 +104,12 @@ struct PopoverView: View {
     private var channelSection: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("Отслеживаемые каналы (\(appState.channelStore.channels.count))")
+                Text("Каналы (\(appState.channelStore.channels.count))")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
-                if !appState.channelStore.retryQueue.isEmpty {
-                    Text("retry: \(appState.channelStore.retryQueue.count)")
+                if appState.queuedChannelCount > 0 {
+                    Text("+\(appState.queuedChannelCount) в очереди")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 6)
@@ -179,6 +183,65 @@ struct PopoverView: View {
                     .padding(.bottom, 6)
             }
         }
+    }
+
+    private var recentVideosSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Новое")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    appState.channelStore.clearRecentVideos()
+                } label: {
+                    Text("Очистить")
+                        .font(.caption2)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            .padding(.bottom, 4)
+            VStack(spacing: 0) {
+                ForEach(Array(appState.channelStore.recentVideos.prefix(5))) { v in
+                    Button {
+                        if let url = URL(string: v.youtubeURL) { NSWorkspace.shared.open(url) }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "play.rectangle.fill")
+                                .foregroundStyle(.secondary)
+                                .font(.caption)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(v.title ?? v.videoId)
+                                    .font(.caption)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                Text("\(v.channelName) · \(relativeTime(v.indexedAt))")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                            }
+                            Spacer()
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 4)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private func relativeTime(_ date: Date) -> String {
+        let interval = Date().timeIntervalSince(date)
+        if interval < 60 { return "только что" }
+        if interval < 3600 { return "\(Int(interval / 60)) мин назад" }
+        if interval < 86400 { return "\(Int(interval / 3600)) ч назад" }
+        return "\(Int(interval / 86400)) д назад"
     }
 
     @ViewBuilder

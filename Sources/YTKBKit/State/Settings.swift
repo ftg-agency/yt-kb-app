@@ -63,6 +63,9 @@ final class Settings: ObservableObject {
         static let maxConcurrentChannels = "maxConcurrentChannels"
         static let autoUpdateEnabled = "autoUpdateEnabled"
         static let kbConsolidationVersion = "kbConsolidationVersion"
+        static let launchAtLogin = "launchAtLogin"
+        static let launchAtLoginPrompted = "launchAtLoginPrompted"
+        static let lastScheduledRunAt = "lastScheduledRunAt"
     }
 
     /// Bump when a new one-time KB-layout migration ships. KBConsolidator runs
@@ -99,6 +102,17 @@ final class Settings: ObservableObject {
     /// this install. Compared against `currentKBConsolidationVersion` at
     /// bootstrap to decide whether to run KBConsolidator.
     @Published var kbConsolidationVersion: Int = 0
+    /// True iff the app is registered to launch automatically at login. Mirrors
+    /// SMAppService.mainApp.status — kept in @Published so the toggle in
+    /// Settings reflects the system truth.
+    @Published var launchAtLogin: Bool = false
+    /// Whether we've already auto-enabled launch-at-login on a fresh install.
+    /// Avoids re-toggling after the user explicitly turned it off.
+    @Published var launchAtLoginPrompted: Bool = false
+    /// Timestamp of the last completed scheduled or wake-triggered poll cycle.
+    /// Used by the wake observer to fast-track a catch-up cycle when the Mac
+    /// returns from sleep and a scheduled tick was missed.
+    @Published var lastScheduledRunAt: Date?
 
     func load() {
         if let raw = defaults.string(forKey: Keys.browser),
@@ -124,7 +138,27 @@ final class Settings: ObservableObject {
         maxConcurrentChannels = max(1, min(4, storedConc))
         autoUpdateEnabled = defaults.object(forKey: Keys.autoUpdateEnabled) as? Bool ?? true
         kbConsolidationVersion = defaults.object(forKey: Keys.kbConsolidationVersion) as? Int ?? 0
+        launchAtLogin = defaults.object(forKey: Keys.launchAtLogin) as? Bool ?? false
+        launchAtLoginPrompted = defaults.bool(forKey: Keys.launchAtLoginPrompted)
+        if let ts = defaults.object(forKey: Keys.lastScheduledRunAt) as? Double {
+            lastScheduledRunAt = Date(timeIntervalSince1970: ts)
+        }
         kbDirectory = resolveBookmark()
+    }
+
+    func setLaunchAtLogin(_ value: Bool) {
+        launchAtLogin = value
+        defaults.set(value, forKey: Keys.launchAtLogin)
+    }
+
+    func setLaunchAtLoginPrompted(_ value: Bool) {
+        launchAtLoginPrompted = value
+        defaults.set(value, forKey: Keys.launchAtLoginPrompted)
+    }
+
+    func setLastScheduledRunAt(_ date: Date) {
+        lastScheduledRunAt = date
+        defaults.set(date.timeIntervalSince1970, forKey: Keys.lastScheduledRunAt)
     }
 
     func setKBConsolidationVersion(_ value: Int) {

@@ -41,14 +41,15 @@ struct ChannelRowView: View {
                         .lineLimit(1)
                 }
                 Spacer()
-                if let count = channel.videoCount, count > 0 {
-                    Text("\(count) видео")
+                if let countLabel = videoCountLabel {
+                    Text(countLabel)
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
                         .background(Color.secondary.opacity(0.12))
                         .cornerRadius(4)
+                        .help(videoCountTooltip)
                 }
             }
 
@@ -112,29 +113,21 @@ struct ChannelRowView: View {
             ProgressView(value: progressFraction(p))
                 .progressViewStyle(.linear)
                 .tint(progressTint(p))
-            if let label = p.label, !label.isEmpty {
-                Text(label)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
             if let mismatch = channelTotalMismatch(p) {
                 Text(mismatch)
                     .font(.caption2)
-                    .foregroundStyle(.orange)
-                    .lineLimit(2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
         }
     }
 
-    /// When YouTube reports more videos than yt-dlp could enumerate, surface
-    /// the gap so the user understands "we'll catch the rest on the next poll
-    /// cycle, this isn't a hang".
+    /// When YouTube reports more videos than we could enumerate, surface the
+    /// gap quietly so the user understands the next cycle will pick up more.
     private func channelTotalMismatch(_ p: ChannelProgress) -> String? {
         guard let reported = p.reportedChannelTotal, reported > 0 else { return nil }
         guard p.total > 0 && reported > p.total + 5 else { return nil }
-        return "На канале всего \(reported) видео, yt-dlp пока видит \(p.total) — остальное подберётся на следующих проверках"
+        return "\(p.total) из \(reported) — остальное подтянется"
     }
 
     private func progressPhaseLabel(_ p: ChannelProgress) -> String {
@@ -187,9 +180,37 @@ struct ChannelRowView: View {
             return "ошибка: \(err)"
         }
         if let last = channel.lastPolledAt {
-            return relativeTime(last)
+            let time = relativeTime(last)
+            if channel.lastPollDownloaded > 0 {
+                return "+\(channel.lastPollDownloaded) · \(time)"
+            }
+            return time
         }
         return "ещё не проверялся"
+    }
+
+    /// Badge text. When YouTube reports a total but we have fewer indexed —
+    /// show "X / Y". When totals match (or only one is known) — show the
+    /// single number. Falls back to nothing if both are zero.
+    private var videoCountLabel: String? {
+        let indexed = channel.indexedCount
+        let total = channel.videoCount ?? 0
+        if total > 0 && indexed > 0 && indexed < total {
+            return "\(indexed) / \(total)"
+        }
+        if total > 0 { return "\(total)" }
+        if indexed > 0 { return "\(indexed)" }
+        return nil
+    }
+
+    private var videoCountTooltip: String {
+        let indexed = channel.indexedCount
+        let total = channel.videoCount ?? 0
+        if total > 0 && indexed > 0 {
+            return "Скачано \(indexed) из \(total) видео на канале"
+        }
+        if total > 0 { return "На канале \(total) видео" }
+        return "Скачано \(indexed) видео"
     }
 
     private func relativeTime(_ date: Date) -> String {

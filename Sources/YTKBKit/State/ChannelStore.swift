@@ -1,7 +1,7 @@
 import Foundation
 import Combine
 
-package struct TrackedChannel: Codable, Identifiable, Equatable {
+package struct TrackedChannel: Codable, Identifiable, Equatable, Sendable {
     package var id: String { url }
     package var url: String
     package var channelId: String?
@@ -29,6 +29,15 @@ package struct TrackedChannel: Codable, Identifiable, Equatable {
     /// successful poll, and by KBConsolidator on bootstrap.
     package var folderName: String? = nil
 
+    /// Number of new transcripts written by the most recent poll cycle. Drives
+    /// the "+3 новых" badge in the channel row.
+    package var lastPollDownloaded: Int = 0
+    /// Number of videos skipped (already-on-disk) by the most recent cycle.
+    package var lastPollSkipped: Int = 0
+    /// Total videos counted in the channel's KB folder. Refreshed after each
+    /// successful poll. Used together with `videoCount` to display "X / Y".
+    package var indexedCount: Int = 0
+
     package init(
         url: String,
         channelId: String? = nil,
@@ -40,7 +49,10 @@ package struct TrackedChannel: Codable, Identifiable, Equatable {
         enabled: Bool = true,
         pollIntervalSeconds: Int? = nil,
         videoCount: Int? = nil,
-        folderName: String? = nil
+        folderName: String? = nil,
+        lastPollDownloaded: Int = 0,
+        lastPollSkipped: Int = 0,
+        indexedCount: Int = 0
     ) {
         self.url = url
         self.channelId = channelId
@@ -53,6 +65,30 @@ package struct TrackedChannel: Codable, Identifiable, Equatable {
         self.pollIntervalSeconds = pollIntervalSeconds
         self.videoCount = videoCount
         self.folderName = folderName
+        self.lastPollDownloaded = lastPollDownloaded
+        self.lastPollSkipped = lastPollSkipped
+        self.indexedCount = indexedCount
+    }
+
+    /// Custom decoder so older state.json files (without the new
+    /// lastPoll{Downloaded,Skipped} / indexedCount fields) decode cleanly with
+    /// sensible defaults instead of throwing keyNotFound.
+    package init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        url = try c.decode(String.self, forKey: .url)
+        channelId = try c.decodeIfPresent(String.self, forKey: .channelId)
+        name = try c.decode(String.self, forKey: .name)
+        addedAt = try c.decode(Date.self, forKey: .addedAt)
+        lastPolledAt = try c.decodeIfPresent(Date.self, forKey: .lastPolledAt)
+        lastPollStatus = try c.decodeIfPresent(String.self, forKey: .lastPollStatus)
+        lastPollError = try c.decodeIfPresent(String.self, forKey: .lastPollError)
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        pollIntervalSeconds = try c.decodeIfPresent(Int.self, forKey: .pollIntervalSeconds)
+        videoCount = try c.decodeIfPresent(Int.self, forKey: .videoCount)
+        folderName = try c.decodeIfPresent(String.self, forKey: .folderName)
+        lastPollDownloaded = try c.decodeIfPresent(Int.self, forKey: .lastPollDownloaded) ?? 0
+        lastPollSkipped = try c.decodeIfPresent(Int.self, forKey: .lastPollSkipped) ?? 0
+        indexedCount = try c.decodeIfPresent(Int.self, forKey: .indexedCount) ?? 0
     }
 
     /// Returns the effective interval in seconds (or nil if "manual only").
@@ -70,7 +106,7 @@ package struct TrackedChannel: Codable, Identifiable, Equatable {
     }
 }
 
-package struct RetryQueueEntry: Codable, Identifiable, Equatable {
+package struct RetryQueueEntry: Codable, Identifiable, Equatable, Sendable {
     package var id: String { videoId }
     package var channelURL: String
     package var videoId: String
@@ -91,15 +127,59 @@ package struct RetryQueueEntry: Codable, Identifiable, Equatable {
     }
 }
 
+/// Single newly-indexed video event. Persisted ring-buffer in state.json so
+/// the popover's "Новое" section survives relaunches and the user always sees
+/// what arrived since they last looked.
+package struct RecentVideo: Codable, Identifiable, Equatable, Sendable {
+    package var id: String { videoId }
+    package var videoId: String
+    package var title: String?
+    package var channelURL: String
+    package var channelName: String
+    package var indexedAt: Date
+
+    package init(videoId: String, title: String?, channelURL: String, channelName: String, indexedAt: Date) {
+        self.videoId = videoId
+        self.title = title
+        self.channelURL = channelURL
+        self.channelName = channelName
+        self.indexedAt = indexedAt
+    }
+
+    package var youtubeURL: String { "https://www.youtube.com/watch?v=\(videoId)" }
+}
+
 struct PersistedState: Codable {
     var channels: [TrackedChannel] = []
     var retryQueue: [RetryQueueEntry] = []
+    var recentVideos: [RecentVideo] = []
+
+    enum CodingKeys: String, CodingKey {
+        case channels, retryQueue, recentVideos
+    }
+
+    init(channels: [TrackedChannel] = [], retryQueue: [RetryQueueEntry] = [], recentVideos: [RecentVideo] = []) {
+        self.channels = channels
+        self.retryQueue = retryQueue
+        self.recentVideos = recentVideos
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        channels = try c.decodeIfPresent([TrackedChannel].self, forKey: .channels) ?? []
+        retryQueue = try c.decodeIfPresent([RetryQueueEntry].self, forKey: .retryQueue) ?? []
+        recentVideos = try c.decodeIfPresent([RecentVideo].self, forKey: .recentVideos) ?? []
+    }
 }
 
 @MainActor
 final class ChannelStore: ObservableObject {
     @Published private(set) var channels: [TrackedChannel] = []
     @Published private(set) var retryQueue: [RetryQueueEntry] = []
+    /// FIFO ring-buffer of the most recently indexed videos across all channels.
+    /// Capped at `maxRecentVideos` (oldest evicted on append). Persisted.
+    @Published private(set) var recentVideos: [RecentVideo] = []
+    private let maxRecentVideos = 50
 
     /// True if a state.json file existed at bootstrap time. False on a fresh
     /// install (or after AppCleaner removed Application Support). AppDelegate
@@ -125,14 +205,15 @@ final class ChannelStore: ObservableObject {
             let state = try dec.decode(PersistedState.self, from: data)
             self.channels = state.channels
             self.retryQueue = state.retryQueue
-            Logger.shared.info("State loaded: channels=\(channels.count) retry=\(retryQueue.count)")
+            self.recentVideos = state.recentVideos
+            Logger.shared.info("State loaded: channels=\(channels.count) retry=\(retryQueue.count) recents=\(recentVideos.count)")
         } catch {
             Logger.shared.error("Failed to load state.json: \(error)")
         }
     }
 
     func save() {
-        let state = PersistedState(channels: channels, retryQueue: retryQueue)
+        let state = PersistedState(channels: channels, retryQueue: retryQueue, recentVideos: recentVideos)
         do {
             let enc = JSONEncoder()
             enc.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -189,5 +270,22 @@ final class ChannelStore: ObservableObject {
 
     func retryEntriesFor(channelURL: String) -> [RetryQueueEntry] {
         retryQueue.filter { $0.channelURL == channelURL }
+    }
+
+    // MARK: - Recent videos
+
+    func appendRecentVideo(_ video: RecentVideo) {
+        // Dedup: same videoId already at the head of the list (rapid double-fire)
+        if recentVideos.first?.videoId == video.videoId { return }
+        recentVideos.insert(video, at: 0)
+        if recentVideos.count > maxRecentVideos {
+            recentVideos.removeLast(recentVideos.count - maxRecentVideos)
+        }
+        save()
+    }
+
+    func clearRecentVideos() {
+        recentVideos.removeAll()
+        save()
     }
 }
