@@ -8,10 +8,12 @@ struct SettingsChannelRow: View {
     let globalLabel: String
     let progress: ChannelProgress?
     let isPollingThis: Bool
+    let folderName: String?
     let onSetInterval: (Int?) -> Void
     let onToggleEnabled: () -> Void
     let onPollOnly: () -> Void
     let onRemove: () -> Void
+    let onOpenFolder: () -> Void
 
     private static let intervalOptions: [(label: String, value: Int?)] = [
         ("По умолчанию", nil),
@@ -52,6 +54,7 @@ struct SettingsChannelRow: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
+                    folderRow
                 }
 
                 Spacer()
@@ -101,6 +104,25 @@ struct SettingsChannelRow: View {
 
     private var intervalBinding: Binding<Int?> {
         Binding(get: { channel.pollIntervalSeconds }, set: { onSetInterval($0) })
+    }
+
+    @ViewBuilder
+    private var folderRow: some View {
+        if let folderName, !folderName.isEmpty {
+            Button(action: onOpenFolder) {
+                HStack(spacing: 4) {
+                    Image(systemName: "folder")
+                        .font(.caption2)
+                    Text(folderName)
+                        .font(.caption2)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Открыть папку канала в Finder")
+        }
     }
 
     @ViewBuilder
