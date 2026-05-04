@@ -94,6 +94,15 @@ package actor ChannelResolver {
         let reportedTotal: Int?
     }
 
+    /// Tuple sent across actor boundaries from each per-tab Task. Errors are
+    /// logged + reduced to a String inside the task so we don't have to send
+    /// `any Error` (non-Sendable) through the TaskGroup result.
+    private struct TabFetchResult: Sendable {
+        let url: String
+        let response: FlatPlaylistResponse?
+        let errorMessage: String?
+    }
+
     /// Enumerate every tab in `enumerationURLs` for the given URL in parallel,
     /// dedup by video_id (preserving first occurrence so chronological order
     /// from /videos wins for channels where it matters), and merge metadata.
@@ -102,34 +111,34 @@ package actor ChannelResolver {
         Logger.shared.info("ChannelResolver: enumerating tabs \(urls)")
 
         var responses: [(url: String, response: FlatPlaylistResponse)] = []
-        var lastError: Error?
+        var lastErrorMessage: String?
 
         // Parallel fetch across tabs. A 404 / "no shorts on this channel"
         // failure is non-fatal — channel may simply not have that tab. We only
         // surface an error if EVERY tab failed.
-        await withTaskGroup(of: (url: String, result: Result<FlatPlaylistResponse, Error>).self) { group in
+        await withTaskGroup(of: TabFetchResult.self) { group in
             for u in urls {
                 group.addTask {
                     do {
                         let r = try await self.fetchEntries(channelURL: u)
-                        return (u, .success(r))
+                        return TabFetchResult(url: u, response: r, errorMessage: nil)
                     } catch {
-                        return (u, .failure(error))
+                        Logger.shared.warn("ChannelResolver: tab \(u) failed: \(error)")
+                        return TabFetchResult(url: u, response: nil, errorMessage: "\(error)")
                     }
                 }
             }
             for await item in group {
-                switch item.result {
-                case .success(let r): responses.append((item.url, r))
-                case .failure(let e):
-                    Logger.shared.warn("ChannelResolver: tab \(item.url) failed: \(e)")
-                    lastError = e
+                if let r = item.response {
+                    responses.append((item.url, r))
+                } else if let msg = item.errorMessage {
+                    lastErrorMessage = msg
                 }
             }
         }
 
         guard !responses.isEmpty else {
-            throw lastError ?? YTDLPError.decodeFailed("ChannelResolver: all tabs failed")
+            throw YTDLPError.decodeFailed(lastErrorMessage ?? "ChannelResolver: all tabs failed")
         }
 
         var seen = Set<String>()

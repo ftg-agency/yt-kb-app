@@ -1,11 +1,11 @@
 import Foundation
 
-package struct SubFormat: Decodable {
+package struct SubFormat: Decodable, Sendable {
     package let ext: String?
     package let url: String?
 }
 
-package struct VideoMetadata: Decodable {
+package struct VideoMetadata: Decodable, Sendable {
     package let id: String
     package let title: String?
     package let channel: String?
@@ -47,7 +47,7 @@ package struct VideoMetadata: Decodable {
     package var canonicalURL: String { webpageUrl ?? "https://www.youtube.com/watch?v=\(id)" }
 }
 
-package struct FlatPlaylistEntry: Decodable {
+package struct FlatPlaylistEntry: Decodable, Sendable {
     package let id: String?
     package let title: String?
     package let url: String?
@@ -62,7 +62,7 @@ package struct FlatPlaylistEntry: Decodable {
     }
 }
 
-package struct FlatPlaylistResponse: Decodable {
+package struct FlatPlaylistResponse: Decodable, Sendable {
     package let id: String?
     package let title: String?
     package let channel: String?
@@ -89,7 +89,7 @@ package struct FlatPlaylistResponse: Decodable {
     package var displayName: String { channel ?? uploader ?? title ?? "Unknown" }
 }
 
-package struct VideoRef: Equatable, Identifiable {
+package struct VideoRef: Equatable, Identifiable, Sendable {
     package var id: String { videoId }
     package let videoId: String
     package let title: String?
