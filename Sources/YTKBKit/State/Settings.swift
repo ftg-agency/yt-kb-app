@@ -62,7 +62,12 @@ final class Settings: ObservableObject {
         static let preventSleepDuringPoll = "preventSleepDuringPoll"
         static let maxConcurrentChannels = "maxConcurrentChannels"
         static let autoUpdateEnabled = "autoUpdateEnabled"
+        static let kbConsolidationVersion = "kbConsolidationVersion"
     }
+
+    /// Bump when a new one-time KB-layout migration ships. KBConsolidator runs
+    /// at bootstrap iff the persisted value is below this.
+    static let currentKBConsolidationVersion: Int = 1
 
     @Published var kbDirectory: URL?
     @Published var browser: BrowserChoice = .chrome
@@ -90,6 +95,10 @@ final class Settings: ObservableObject {
     /// Auto-check GitHub Releases for newer versions every 6 hours.
     /// User can also trigger a manual check via Settings → О приложении.
     @Published var autoUpdateEnabled: Bool = true
+    /// Version of the most recent one-time KB-layout migration that has run on
+    /// this install. Compared against `currentKBConsolidationVersion` at
+    /// bootstrap to decide whether to run KBConsolidator.
+    @Published var kbConsolidationVersion: Int = 0
 
     func load() {
         if let raw = defaults.string(forKey: Keys.browser),
@@ -114,7 +123,13 @@ final class Settings: ObservableObject {
         let storedConc = defaults.object(forKey: Keys.maxConcurrentChannels) as? Int ?? 2
         maxConcurrentChannels = max(1, min(4, storedConc))
         autoUpdateEnabled = defaults.object(forKey: Keys.autoUpdateEnabled) as? Bool ?? true
+        kbConsolidationVersion = defaults.object(forKey: Keys.kbConsolidationVersion) as? Int ?? 0
         kbDirectory = resolveBookmark()
+    }
+
+    func setKBConsolidationVersion(_ value: Int) {
+        kbConsolidationVersion = value
+        defaults.set(value, forKey: Keys.kbConsolidationVersion)
     }
 
     func setAutoUpdateEnabled(_ value: Bool) {

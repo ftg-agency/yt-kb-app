@@ -267,6 +267,9 @@ actor PollingCoordinator {
         if let total = report.reportedChannelTotal {
             built.videoCount = total
         }
+        if built.folderName == nil, let resolved = report.resolvedFolderName {
+            built.folderName = resolved
+        }
         let okCount = report.counts["ok"] ?? 0
         if let err = report.firstError, okCount == 0 {
             built.lastPollStatus = "error"
