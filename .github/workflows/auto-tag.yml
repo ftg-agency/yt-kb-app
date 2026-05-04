@@ -14,6 +14,10 @@ on:
 
 permissions:
   contents: write
+  # Needed for `gh workflow run` below — tag pushes signed with the default
+  # GITHUB_TOKEN don't trigger downstream workflows (GitHub anti-loop), so we
+  # dispatch release.yml manually after creating the tag.
+  actions: write
 
 jobs:
   tag:
@@ -64,3 +68,11 @@ jobs:
           tag="v${{ steps.version.outputs.version }}"
           git tag -a "$tag" -m "$tag"
           git push origin "$tag"
+
+      - name: Dispatch release workflow on the new tag
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="v${{ steps.version.outputs.version }}"
+          gh workflow run release.yml --ref "$tag"
