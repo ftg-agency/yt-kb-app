@@ -790,6 +790,18 @@ struct SettingsView: View {
             guard let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
                 throw NSError(domain: "YTKB", code: 1, userInfo: [NSLocalizedDescriptionKey: "Ожидается массив каналов"])
             }
+            // Discover once: if any imported channel already has a folder on
+            // disk (from a prior install), reuse its name instead of letting
+            // the first poll create a duplicate clean-slug sibling.
+            var existingByURL: [String: String] = [:]
+            if let kb = appState.settings.kbDirectory {
+                let started = kb.startAccessingSecurityScopedResource()
+                for d in AutoDiscovery.discover(in: kb) {
+                    existingByURL[KBConsolidator.normalizeURL(d.url)] = d.folderName
+                }
+                if started { kb.stopAccessingSecurityScopedResource() }
+            }
+
             var added = 0
             for entry in array {
                 guard let url = entry["url"] as? String, !url.isEmpty,
@@ -803,7 +815,8 @@ struct SettingsView: View {
                     lastPolledAt: nil,
                     lastPollStatus: nil,
                     lastPollError: nil,
-                    enabled: (entry["enabled"] as? Bool) ?? true
+                    enabled: (entry["enabled"] as? Bool) ?? true,
+                    folderName: existingByURL[KBConsolidator.normalizeURL(url)]
                 )
                 appState.channelStore.addChannel(ch)
                 added += 1

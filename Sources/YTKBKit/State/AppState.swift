@@ -119,7 +119,51 @@ final class AppState: ObservableObject {
         if freshInstall && settings.onboardingCompleted {
             Logger.shared.info("Fresh install detected (no state.json); forcing onboarding despite stale UserDefaults")
         }
+
+        runKBConsolidationIfNeeded(freshInstall: freshInstall)
+
         Logger.shared.info("Bootstrap done. channels=\(channelStore.channels.count) onboarding=\(needsOnboarding) freshInstall=\(freshInstall)")
+    }
+
+    /// Run the one-time KB-layout migration if the persisted version is
+    /// behind the current one. Renames legacy folders (`<slug>-<id-suffix>`
+    /// from yt-kb.py) into clean slugs and merges duplicates created after the
+    /// recent slug fix. Pins the resulting folder name on each channel so
+    /// future polls don't drift again. Silent on success — only logs.
+    private func runKBConsolidationIfNeeded(freshInstall: Bool) {
+        let target = Settings.currentKBConsolidationVersion
+        guard settings.kbConsolidationVersion < target else { return }
+
+        // Fresh install: nothing on disk yet, just stamp the current version.
+        if freshInstall {
+            settings.setKBConsolidationVersion(target)
+            return
+        }
+        guard let kbRoot = settings.kbDirectory else {
+            // KB not configured (rare for non-fresh installs). Don't stamp —
+            // try again next launch when it's hopefully set.
+            return
+        }
+        guard !channelStore.channels.isEmpty else {
+            // No tracked channels yet; nothing to consolidate against.
+            settings.setKBConsolidationVersion(target)
+            return
+        }
+
+        let started = kbRoot.startAccessingSecurityScopedResource()
+        defer { if started { kbRoot.stopAccessingSecurityScopedResource() } }
+
+        let report = KBConsolidator.consolidate(kbRoot: kbRoot, channels: channelStore.channels)
+        for outcome in report.outcomes {
+            guard let folderName = outcome.folderName else { continue }
+            guard let existing = channelStore.channels.first(where: { $0.url == outcome.channelURL }) else { continue }
+            if existing.folderName == folderName { continue }
+            var updated = existing
+            updated.folderName = folderName
+            channelStore.updateChannel(updated)
+        }
+        Logger.shared.info("KBConsolidator: pinned=\(report.pinnedChannels) renamed=\(report.renamedFolders) merged=\(report.mergedFolders) errors=\(report.totalErrors)")
+        settings.setKBConsolidationVersion(target)
     }
 
     /// Restart the background scheduler — call after settings change (interval, enabled).
@@ -215,7 +259,8 @@ final class AppState: ObservableObject {
                 lastPolledAt: nil,
                 lastPollStatus: nil,
                 lastPollError: nil,
-                enabled: true
+                enabled: true,
+                folderName: d.folderName
             )
             channelStore.addChannel(tracked)
         }

@@ -380,16 +380,28 @@ struct PopoverView: View {
 
     private func saveAdd() {
         guard let name = addResolvedName else { return }
+        let url = addURL.trimmingCharacters(in: .whitespaces)
         let channel = TrackedChannel(
-            url: addURL.trimmingCharacters(in: .whitespaces),
+            url: url,
             channelId: addResolvedChannelId,
             name: name,
             addedAt: Date(),
-            videoCount: addResolvedVideoCount
+            videoCount: addResolvedVideoCount,
+            folderName: resolveExistingFolderName(name: name, url: url)
         )
         appState.channelStore.addChannel(channel)
         cancelAdd()
         Task { await PollingCoordinator.shared.pollOne(channel: channel, appState: appState) }
+    }
+
+    /// If KB already has a folder for this channel (from a prior install or a
+    /// manual rename), reuse its name. Otherwise return nil and let the first
+    /// poll create a clean-slug folder and pin it.
+    private func resolveExistingFolderName(name: String, url: String) -> String? {
+        guard let kb = appState.settings.kbDirectory else { return nil }
+        let started = kb.startAccessingSecurityScopedResource()
+        defer { if started { kb.stopAccessingSecurityScopedResource() } }
+        return KBConsolidator.existingFolderName(forURL: url, in: kb)
     }
 
     /// Sort priority for the popover list:
@@ -422,7 +434,8 @@ struct PopoverView: View {
         guard let kb = appState.settings.kbDirectory else { return }
         do {
             _ = try appState.settings.withKBAccess { _ in
-                let dir = kb.appendingPathComponent(channel.name)
+                let dirName = channel.folderName ?? Slugify.slug(channel.name.isEmpty ? "unknown-channel" : channel.name)
+                let dir = kb.appendingPathComponent(dirName)
                 if FileManager.default.fileExists(atPath: dir.path) {
                     NSWorkspace.shared.open(dir)
                 } else {

@@ -23,6 +23,11 @@ struct PollChannelReport {
     var updatedRetries: [RetryQueueEntry] = []
     /// Retry entries whose video was successfully transcribed; remove from queue.
     var resolvedRetries: [String] = []  // video_ids
+    /// Folder name (relative to kbRoot) where this channel's files were
+    /// written this cycle. Set when at least one video was processed and the
+    /// channel had no pinned `folderName` yet — coordinator persists it onto
+    /// `TrackedChannel.folderName` so subsequent polls reuse the same folder.
+    var resolvedFolderName: String?
 }
 
 actor PollOperation {
@@ -95,7 +100,7 @@ actor PollOperation {
                 isInitialIndexing: isInitial,
                 reportedChannelTotal: reportedTotal
             ))
-            let outcome = await processVideo(ref: ref, kbRoot: kbRoot)
+            let outcome = await processVideo(ref: ref, kbRoot: kbRoot, channel: channel, report: &report)
             applyOutcome(outcome, ref: ref, channelURL: channel.url, channelName: channel.name, isRetry: false, report: &report)
             if report.botCheckHit { return report }
         }
@@ -116,7 +121,7 @@ actor PollOperation {
                 isInitialIndexing: false,
                 reportedChannelTotal: reportedTotal
             ))
-            let outcome = await processVideo(ref: ref, kbRoot: kbRoot)
+            let outcome = await processVideo(ref: ref, kbRoot: kbRoot, channel: channel, report: &report)
             applyOutcome(outcome, ref: ref, channelURL: channel.url, channelName: channel.name, isRetry: true, report: &report, priorEntry: entry)
             if report.botCheckHit { return report }
         }
@@ -174,7 +179,7 @@ actor PollOperation {
         }
     }
 
-    private func processVideo(ref: VideoRef, kbRoot: URL) async -> PollOutcome {
+    private func processVideo(ref: VideoRef, kbRoot: URL, channel: TrackedChannel, report: inout PollChannelReport) async -> PollOutcome {
         let videoURL = ref.url
         let meta: VideoMetadata
         do {
@@ -183,7 +188,13 @@ actor PollOperation {
             return .error(message: "метаданные: \(error)")
         }
 
-        let channelDir = kbRoot.appendingPathComponent(FileNaming.channelDirName(meta: meta))
+        // Folder pin precedence: channel.folderName (set by Consolidator or a
+        // prior poll) > anything we can derive from the video metadata. Falls
+        // back to a fresh slug only when neither is available.
+        let dirName = channel.folderName
+            ?? report.resolvedFolderName
+            ?? FileNaming.channelDirName(meta: meta)
+        let channelDir = kbRoot.appendingPathComponent(dirName)
         let videoFileName = FileNaming.videoFileName(meta: meta)
         let videoPath = channelDir.appendingPathComponent(videoFileName)
         if FileManager.default.fileExists(atPath: videoPath.path) {
@@ -244,6 +255,13 @@ actor PollOperation {
                 _ = try FileManager.default.replaceItemAt(videoPath, withItemAt: tmp)
             } catch {
                 return .error(message: "запись файла: \(error)")
+            }
+
+            // Pin the folder we just wrote into so the coordinator can
+            // persist it. Only set when channel had no prior pin (otherwise
+            // we'd be re-affirming the same value the coordinator already has).
+            if channel.folderName == nil, report.resolvedFolderName == nil {
+                report.resolvedFolderName = dirName
             }
 
             ChannelIndexBuilder.rebuild(

@@ -23,6 +23,12 @@ package struct TrackedChannel: Codable, Identifiable, Equatable {
     /// user always sees "X videos on YouTube" without having to start a poll.
     package var videoCount: Int? = nil
 
+    /// Folder name (relative to kbRoot) where this channel's .md files live.
+    /// nil means the path hasn't been pinned yet — callers must fall back to
+    /// recomputing from the channel name. Pinned at adopt-time, at first
+    /// successful poll, and by KBConsolidator on bootstrap.
+    package var folderName: String? = nil
+
     package init(
         url: String,
         channelId: String? = nil,
@@ -33,7 +39,8 @@ package struct TrackedChannel: Codable, Identifiable, Equatable {
         lastPollError: String? = nil,
         enabled: Bool = true,
         pollIntervalSeconds: Int? = nil,
-        videoCount: Int? = nil
+        videoCount: Int? = nil,
+        folderName: String? = nil
     ) {
         self.url = url
         self.channelId = channelId
@@ -45,6 +52,7 @@ package struct TrackedChannel: Codable, Identifiable, Equatable {
         self.enabled = enabled
         self.pollIntervalSeconds = pollIntervalSeconds
         self.videoCount = videoCount
+        self.folderName = folderName
     }
 
     /// Returns the effective interval in seconds (or nil if "manual only").

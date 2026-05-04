@@ -10,6 +10,7 @@ func runAll() {
     TestHarness.suite("RetryProcessor", retryProcessorTests)
     TestHarness.suite("ChannelResolver", channelResolverTests)
     TestHarness.suite("KBMigrator", migratorTests)
+    TestHarness.suite("KBConsolidator", consolidatorTests)
     TestHarness.suite("Scheduler/Interval", schedulerIntervalTests)
     exit(Int32(TestHarness.summary()))
 }
