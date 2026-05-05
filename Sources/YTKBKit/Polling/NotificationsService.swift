@@ -60,8 +60,17 @@ final class NotificationsService {
     /// Reflects the current authorization status from UNUserNotificationCenter.
     /// Used by Settings UI to surface a "Permissions denied" banner with a
     /// link to System Settings when banners aren't going to land.
+    ///
+    /// We can't `await center.notificationSettings()` directly: the returned
+    /// `UNNotificationSettings` is non-Sendable and would have to cross the
+    /// MainActor boundary. Reading the status inside the callback closure and
+    /// resuming with just the (Sendable) enum value sidesteps the issue.
     func authorizationStatus() async -> UNAuthorizationStatus {
-        await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
+        await withCheckedContinuation { (cont: CheckedContinuation<UNAuthorizationStatus, Never>) in
+            UNUserNotificationCenter.current().getNotificationSettings { settings in
+                cont.resume(returning: settings.authorizationStatus)
+            }
+        }
     }
 
     func postSuccess(downloaded: Int, appState: AppState) async {
