@@ -66,6 +66,7 @@ final class Settings: ObservableObject {
         static let launchAtLogin = "launchAtLogin"
         static let launchAtLoginPrompted = "launchAtLoginPrompted"
         static let lastScheduledRunAt = "lastScheduledRunAt"
+        static let lastDigestPostedAt = "lastDigestPostedAt"
     }
 
     /// Bump when a new one-time KB-layout migration ships. KBConsolidator runs
@@ -113,6 +114,9 @@ final class Settings: ObservableObject {
     /// Used by the wake observer to fast-track a catch-up cycle when the Mac
     /// returns from sleep and a scheduled tick was missed.
     @Published var lastScheduledRunAt: Date?
+    /// Timestamp of the last daily-digest banner. Used to ensure we fire it at
+    /// most once per calendar day, after 09:00 local time.
+    @Published var lastDigestPostedAt: Date?
 
     func load() {
         if let raw = defaults.string(forKey: Keys.browser),
@@ -143,7 +147,15 @@ final class Settings: ObservableObject {
         if let ts = defaults.object(forKey: Keys.lastScheduledRunAt) as? Double {
             lastScheduledRunAt = Date(timeIntervalSince1970: ts)
         }
+        if let ts = defaults.object(forKey: Keys.lastDigestPostedAt) as? Double {
+            lastDigestPostedAt = Date(timeIntervalSince1970: ts)
+        }
         kbDirectory = resolveBookmark()
+    }
+
+    func setLastDigestPostedAt(_ date: Date) {
+        lastDigestPostedAt = date
+        defaults.set(date.timeIntervalSince1970, forKey: Keys.lastDigestPostedAt)
     }
 
     func setLaunchAtLogin(_ value: Bool) {

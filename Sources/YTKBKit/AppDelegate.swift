@@ -147,18 +147,16 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency
     }
 
     /// Required so notifications still appear when our app is in foreground.
-    /// (Without this, clicks-to-open work but the banner is suppressed.)
+    /// Always show the banner — Notification Centre is the user's reliable
+    /// archive of "what got indexed today". Earlier code suppressed when the
+    /// popover happened to be open; that swallowed messages even though the
+    /// popover doesn't show a cycle-results history.
     public func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        // If popover is open, suppress (per spec §9 — user already sees state in UI)
-        if appState.isPopoverOpen {
-            completionHandler([])
-        } else {
-            completionHandler([.banner, .sound])
-        }
+        completionHandler([.banner, .sound])
     }
 
     public func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

@@ -27,20 +27,19 @@ final class NotificationsService {
         }
     }
 
-    /// Post a notification if user has enabled them and the popover is closed.
-    /// `channelURL` is propagated to userInfo so click-to-open can deep-link to it.
+    /// Post a notification if user has enabled them. Always lets the banner
+    /// land in Notification Centre — earlier code suppressed when the popover
+    /// was open, which made banners disappear silently. `channelURL` is
+    /// propagated to userInfo so click-to-open can deep-link to it.
     func post(
         title: String,
         body: String,
         critical: Bool = false,
         identifier: String = UUID().uuidString,
         channelURL: String? = nil,
-        suppressIfPopoverOpen: Bool = true,
         appState: AppState? = nil
     ) async {
-        if suppressIfPopoverOpen, let appState, appState.isPopoverOpen {
-            return  // user is already looking at the UI
-        }
+        _ = appState  // kept for callsite compat; popover-suppression intentionally removed
         await requestAuthorisationIfNeeded()
         guard hasAuthorisation else { return }
         let content = UNMutableNotificationContent()
@@ -55,6 +54,22 @@ final class NotificationsService {
             try await UNUserNotificationCenter.current().add(request)
         } catch {
             Logger.shared.warn("post notification failed: \(error)")
+        }
+    }
+
+    /// Reflects the current authorization status from UNUserNotificationCenter.
+    /// Used by Settings UI to surface a "Permissions denied" banner with a
+    /// link to System Settings when banners aren't going to land.
+    ///
+    /// We can't `await center.notificationSettings()` directly: the returned
+    /// `UNNotificationSettings` is non-Sendable and would have to cross the
+    /// MainActor boundary. Reading the status inside the callback closure and
+    /// resuming with just the (Sendable) enum value sidesteps the issue.
+    func authorizationStatus() async -> UNAuthorizationStatus {
+        await withCheckedContinuation { (cont: CheckedContinuation<UNAuthorizationStatus, Never>) in
+            UNUserNotificationCenter.current().getNotificationSettings { settings in
+                cont.resume(returning: settings.authorizationStatus)
+            }
         }
     }
 
@@ -85,6 +100,52 @@ final class NotificationsService {
         )
     }
 
+    /// Per-channel summary at the end of a poll cycle. Single banner per
+    /// channel per cycle (no throttling needed). Body example: "+12 видео · 4960 всего".
+    func postChannelIndexed(channelName: String, channelURL: String, downloaded: Int, total: Int?, appState: AppState) async {
+        let title = channelName
+        let body: String
+        if let total, total > 0 {
+            body = "+\(downloaded) видео · \(total) всего"
+        } else {
+            body = "+\(downloaded) новых транскрипт\(pluralForm(downloaded))"
+        }
+        let identifier = "io.yt-kb.notif.channel.\(channelURL.hashValue).\(UUID().uuidString)"
+        await post(
+            title: title,
+            body: body,
+            identifier: identifier,
+            channelURL: channelURL,
+            appState: appState
+        )
+    }
+
+    /// Daily digest banner. Fires once per day after the first cycle that
+    /// completes past 9:00 local time. Body summarises last 24h activity.
+    func postDailyDigest(downloadedToday: Int, channelsTouched: Int, appState: AppState) async {
+        let title = "yt-kb · сводка за сутки"
+        let body: String
+        if downloadedToday == 0 {
+            body = "За сутки новых видео не было"
+        } else {
+            body = "+\(downloadedToday) видео · \(channelsTouched) канал\(channelPluralForm(channelsTouched))"
+        }
+        await post(
+            title: title,
+            body: body,
+            identifier: "io.yt-kb.notif.digest.\(UUID().uuidString)",
+            appState: appState
+        )
+    }
+
+    private func channelPluralForm(_ n: Int) -> String {
+        let mod10 = n % 10
+        let mod100 = n % 100
+        if mod10 == 1 && mod100 != 11 { return "" }
+        if (2...4).contains(mod10) && !(12...14).contains(mod100) { return "а" }
+        return "ов"
+    }
+
     func postChannelError(channelName: String, channelURL: String, message: String, appState: AppState) async {
         await post(
             title: "yt-kb · ошибка",
@@ -96,13 +157,11 @@ final class NotificationsService {
     }
 
     func postBotCheck(appState: AppState) async {
-        // Bot-check is critical — fires even with popover open.
         await post(
             title: "yt-kb · YouTube требует cookies",
             body: "Залогиньтесь в YouTube в выбранном браузере и попробуйте снова.",
             critical: true,
             identifier: "io.yt-kb.notif.botcheck",
-            suppressIfPopoverOpen: false,
             appState: appState
         )
     }
