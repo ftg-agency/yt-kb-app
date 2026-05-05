@@ -199,7 +199,36 @@ actor PollingCoordinator {
         let bot = botHit
         Task { [self] in
             await self.postSummaryNotification(appState: appState, trigger: trigger, totalDownloaded: dl, botHit: bot)
+            await self.maybePostDailyDigest(appState: appState)
         }
+    }
+
+    /// Daily digest gate: at most one banner per calendar day, fired only
+    /// after 09:00 local time. Sums `lastPollDownloaded` across channels
+    /// polled in the last 24h.
+    private func maybePostDailyDigest(appState: AppState) async {
+        let (enabled, lastDigest, channels) = await MainActor.run { () -> (Bool, Date?, [TrackedChannel]) in
+            (appState.settings.notificationsEnabled, appState.settings.lastDigestPostedAt, appState.channelStore.channels)
+        }
+        guard enabled else { return }
+        let now = Date()
+        let cal = Calendar.current
+        if cal.component(.hour, from: now) < 9 { return }
+        if let last = lastDigest, cal.isDate(last, inSameDayAs: now) { return }
+
+        let cutoff = now.addingTimeInterval(-24 * 3600)
+        var downloaded = 0
+        var touched = 0
+        for ch in channels {
+            guard let lp = ch.lastPolledAt, lp >= cutoff else { continue }
+            if ch.lastPollDownloaded > 0 {
+                downloaded += ch.lastPollDownloaded
+                touched += 1
+            }
+        }
+        await NotificationsService.shared.postDailyDigest(downloadedToday: downloaded, channelsTouched: touched, appState: appState)
+        let stamp = now
+        await MainActor.run { appState.settings.setLastDigestPostedAt(stamp) }
     }
 
     private func pollOneInternal(
@@ -263,6 +292,17 @@ actor PollingCoordinator {
                         )
                     }
                 }
+            },
+            onResolvedChannelTotal: { [appState, channelURL] total in
+                // The moment yt-dlp returns playlist_count for /videos+/shorts
+                // +/streams, persist it onto the TrackedChannel so the row
+                // badge updates from "500" (stale) → "0 / 4960" within seconds.
+                Task { @MainActor in
+                    guard var ch = appState.channelStore.channels.first(where: { $0.url == channelURL }) else { return }
+                    if ch.videoCount == total { return }
+                    ch.videoCount = total
+                    appState.channelStore.updateChannel(ch)
+                }
             }
         )
         await MainActor.run {
@@ -303,6 +343,7 @@ actor PollingCoordinator {
         Logger.shared.info("Poll done: \(channel.name) · \(summary)")
 
         let errSnapshot = report.firstError
+        let reportedTotal = report.reportedChannelTotal
         await MainActor.run {
             appState.channelStore.updateChannel(updatedChannel)
             for vid in resolved { appState.channelStore.removeRetryEntry(videoId: vid) }
@@ -316,6 +357,22 @@ actor PollingCoordinator {
                 let url = channel.url
                 let msg = String(err.prefix(120))
                 Task { await NotificationsService.shared.postChannelError(channelName: name, channelURL: url, message: msg, appState: appState) }
+            }
+            // Per-channel summary banner: one per cycle when something new was
+            // actually downloaded. Skipped on the channel's first ever poll
+            // (initial backfill of an established channel isn't "news").
+            if okCount > 0, !isInitial, appState.settings.notificationsEnabled {
+                let name = channel.name
+                let url = channel.url
+                Task {
+                    await NotificationsService.shared.postChannelIndexed(
+                        channelName: name,
+                        channelURL: url,
+                        downloaded: okCount,
+                        total: reportedTotal,
+                        appState: appState
+                    )
+                }
             }
         }
         return report

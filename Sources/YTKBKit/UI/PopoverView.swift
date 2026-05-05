@@ -28,10 +28,6 @@ struct PopoverView: View {
             }
             Divider()
             channelSection
-            if !appState.channelStore.recentVideos.isEmpty {
-                Divider()
-                recentVideosSection
-            }
             Divider()
             footerButtons
         }
@@ -185,65 +181,6 @@ struct PopoverView: View {
         }
     }
 
-    private var recentVideosSection: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Новое")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button {
-                    appState.channelStore.clearRecentVideos()
-                } label: {
-                    Text("Очистить")
-                        .font(.caption2)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 12)
-            .padding(.top, 8)
-            .padding(.bottom, 4)
-            VStack(spacing: 0) {
-                ForEach(Array(appState.channelStore.recentVideos.prefix(5))) { v in
-                    Button {
-                        if let url = URL(string: v.youtubeURL) { NSWorkspace.shared.open(url) }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "play.rectangle.fill")
-                                .foregroundStyle(.secondary)
-                                .font(.caption)
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(v.title ?? v.videoId)
-                                    .font(.caption)
-                                    .lineLimit(1)
-                                    .truncationMode(.tail)
-                                Text("\(v.channelName) · \(relativeTime(v.indexedAt))")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                                    .truncationMode(.tail)
-                            }
-                            Spacer()
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 4)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-        }
-    }
-
-    private func relativeTime(_ date: Date) -> String {
-        let interval = Date().timeIntervalSince(date)
-        if interval < 60 { return "только что" }
-        if interval < 3600 { return "\(Int(interval / 60)) мин назад" }
-        if interval < 86400 { return "\(Int(interval / 3600)) ч назад" }
-        return "\(Int(interval / 86400)) д назад"
-    }
-
     @ViewBuilder
     private var addChannelInline: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -294,7 +231,7 @@ struct PopoverView: View {
                 HStack(spacing: 4) {
                     Image(systemName: "checkmark.seal.fill")
                         .foregroundStyle(.green)
-                    Text("Найден: \(resolvedName)")
+                    Text(resolvedPreview(name: resolvedName))
                         .font(.caption)
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -413,6 +350,13 @@ struct PopoverView: View {
         addResolving = false
     }
 
+    private func resolvedPreview(name: String) -> String {
+        if let count = addResolvedVideoCount, count > 0 {
+            return "Найден: \(name) · ~\(count) видео"
+        }
+        return "Найден: \(name)"
+    }
+
     private func resolveAdd() {
         let raw = addURL.trimmingCharacters(in: .whitespaces)
         guard !raw.isEmpty else { return }
@@ -427,7 +371,10 @@ struct PopoverView: View {
             defer { Task { @MainActor in addResolving = false } }
             do {
                 let resolver = ChannelResolver(runner: YTDLPRunner.shared, config: config)
-                let result = try await resolver.resolveMetadata(channelURL: raw)
+                // Quick path: one tab, one player_client, -I 1:1 — finishes in
+                // 1–2 seconds. Full enumeration happens later inside the first
+                // pollChannel() call after the user clicks "Add".
+                let result = try await resolver.resolveQuick(channelURL: raw)
                 await MainActor.run {
                     addResolvedName = result.name
                     addResolvedChannelId = result.channelId
