@@ -58,13 +58,6 @@ final class NotificationsService {
         }
     }
 
-    /// Reflects the current authorization status from UNUserNotificationCenter.
-    /// Used by Settings UI to surface a "Permissions denied" banner with a
-    /// link to System Settings when banners aren't going to land.
-    func authorizationStatus() async -> UNAuthorizationStatus {
-        await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
-    }
-
     func postSuccess(downloaded: Int, appState: AppState) async {
         await post(
             title: "yt-kb",
