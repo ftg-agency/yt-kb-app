@@ -275,8 +275,9 @@ final class ChannelStore: ObservableObject {
     // MARK: - Recent videos
 
     func appendRecentVideo(_ video: RecentVideo) {
-        // Dedup: same videoId already at the head of the list (rapid double-fire)
-        if recentVideos.first?.videoId == video.videoId { return }
+        // Full dedup by videoId — duplicates would crash any ForEach that
+        // uses RecentVideo.id (= videoId) as the SwiftUI element identity.
+        if recentVideos.contains(where: { $0.videoId == video.videoId }) { return }
         recentVideos.insert(video, at: 0)
         if recentVideos.count > maxRecentVideos {
             recentVideos.removeLast(recentVideos.count - maxRecentVideos)
