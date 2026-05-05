@@ -73,24 +73,6 @@ package actor ChannelResolver {
         )
     }
 
-    /// Lightweight resolve for the "Verify URL" UI affordance. One tab
-    /// (`/videos`), one player_client, `-I 1:1` — finishes in 1–2 seconds even
-    /// on 5000-video channels. Returns display name + channelId + reported
-    /// total — enough to confirm "yes, this URL is a real channel and here's
-    /// its handle" before the user commits to adding it. Full enumeration
-    /// happens later inside `PollOperation.pollChannel`.
-    func resolveQuick(channelURL: String) async throws -> ResolvedChannel {
-        let normalised = Self.normaliseChannelURL(channelURL)
-        let response = try await fetchOnce(url: normalised, playerClients: "tv_simply", limit: 1)
-        return ResolvedChannel(
-            name: response.displayName,
-            channelId: response.channelId ?? response.uploaderId,
-            channelURL: response.channelUrl ?? channelURL,
-            videos: [],
-            reportedTotalCount: response.playlistCount
-        )
-    }
-
     func listVideos(channelURL: String) async throws -> [VideoRef] {
         let merged = try await fetchAllTabs(channelURL: channelURL)
         return merged.videos
@@ -243,26 +225,18 @@ package actor ChannelResolver {
         throw lastError ?? YTDLPError.decodeFailed("ChannelResolver: all attempts failed")
     }
 
-    /// `limit` is the upper bound passed to yt-dlp's `-I 1:N` slice. Use 99999
-    /// for the full enumeration paths and 1 for the quick "does this URL
-    /// resolve" check. The smaller slice still surfaces channel-level metadata
-    /// (display name, channel_id, playlist_count) but skips the multi-page
-    /// continuation walk — finishes in ~1–2 seconds even on 5000-video channels.
-    private func fetchOnce(url: String, playerClients: String, limit: Int = 99999) async throws -> FlatPlaylistResponse {
+    private func fetchOnce(url: String, playerClients: String) async throws -> FlatPlaylistResponse {
         var args = config.baseArgs
         args.append(contentsOf: [
             "--flat-playlist",
             "--dump-single-json",
             "--no-warnings",
             "--extractor-args", "youtube:player_client=\(playerClients)",
-            "-I", "1:\(limit)",
+            "-I", "1:99999",
             url
         ])
-        // 10 minutes for full enumeration; 1 minute is plenty for the
-        // single-entry quick path where yt-dlp just needs to fetch the
-        // channel's first page.
-        let timeout: TimeInterval = limit <= 1 ? 60 : 600
-        let result = try await runner.run(args, timeout: timeout)
+        // 10 minutes — very large channels (5000+ videos) take a while
+        let result = try await runner.run(args, timeout: 600)
         guard result.exitCode == 0 else {
             throw YTDLPError.nonZeroExit(result.exitCode, result.stderr.lastNonEmptyLine)
         }

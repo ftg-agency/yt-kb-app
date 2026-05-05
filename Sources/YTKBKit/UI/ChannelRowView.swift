@@ -113,15 +113,29 @@ struct ChannelRowView: View {
             ProgressView(value: progressFraction(p))
                 .progressViewStyle(.linear)
                 .tint(progressTint(p))
+            if let mismatch = channelTotalMismatch(p) {
+                Text(mismatch)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
         }
+    }
+
+    /// When YouTube reports more videos than we could enumerate, surface the
+    /// gap quietly so the user understands the next cycle will pick up more.
+    private func channelTotalMismatch(_ p: ChannelProgress) -> String? {
+        guard let reported = p.reportedChannelTotal, reported > 0 else { return nil }
+        guard p.total > 0 && reported > p.total + 5 else { return nil }
+        return "\(p.total) из \(reported) — остальное подтянется"
     }
 
     private func progressPhaseLabel(_ p: ChannelProgress) -> String {
         switch p.phase {
         case .resolving: return "Получаю список видео…"
         case .scanning: return "Сканирую базу…"
-        case .processing: return "Индексирую…"
-        case .retrying: return "Индексирую…"
+        case .processing: return p.isInitialIndexing ? "Индексация" : "Обработка"
+        case .retrying: return "Retry"
         }
     }
 
@@ -160,7 +174,7 @@ struct ChannelRowView: View {
     }
 
     private var subtitle: String {
-        if isPollingThis { return "Индексирую…" }
+        if isPollingThis { return "проверяется…" }
         if !channel.enabled { return "не опрашивается" }
         if let err = channel.lastPollError, channel.lastPollStatus == "error" {
             return "ошибка: \(err)"

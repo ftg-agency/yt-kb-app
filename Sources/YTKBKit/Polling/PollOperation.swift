@@ -63,8 +63,7 @@ actor PollOperation {
         priorRetries: [RetryQueueEntry],
         cancellation: CancellationFlag,
         progress: @Sendable (ChannelProgress) -> Void,
-        onIndexed: (@Sendable (IndexedVideoEvent) -> Void)? = nil,
-        onResolvedChannelTotal: (@Sendable (Int) -> Void)? = nil
+        onIndexed: (@Sendable (IndexedVideoEvent) -> Void)? = nil
     ) async -> PollChannelReport {
         var report = PollChannelReport()
         let isInitial = channel.lastPolledAt == nil
@@ -79,10 +78,6 @@ actor PollOperation {
             videos = resolved.videos
             reportedTotal = resolved.reportedTotal
             report.reportedChannelTotal = reportedTotal
-            // Surface the YouTube total now (before processing 5000 videos)
-            // so the row badge flips from a stale persisted videoCount to the
-            // freshly-resolved one within seconds, not at end of cycle.
-            if let t = reportedTotal, t > 0 { onResolvedChannelTotal?(t) }
         } catch {
             if cancellation.isCancelled { report.cancelled = true; return report }
             report.firstError = "не удалось получить список видео: \(error)"

@@ -153,6 +153,12 @@ struct SettingsChannelRow: View {
             ProgressView(value: progressFraction(p))
                 .progressViewStyle(.linear)
                 .tint(progressTint(p))
+            if let reported = p.reportedChannelTotal, reported > 0, p.total > 0, reported > p.total + 5 {
+                Text("\(p.total) из \(reported) — остальное подтянется на следующих проверках.")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
+            }
         }
     }
 
@@ -160,8 +166,8 @@ struct SettingsChannelRow: View {
         switch p.phase {
         case .resolving:  return "Получаю список видео…"
         case .scanning:   return "Сканирую базу…"
-        case .processing: return "Индексирую…"
-        case .retrying:   return "Индексирую…"
+        case .processing: return p.isInitialIndexing ? "Индексация" : "Обработка"
+        case .retrying:   return "Retry"
         }
     }
 

@@ -1,19 +1,17 @@
 import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
-import UserNotifications
 
 struct SettingsView: View {
     @ObservedObject var appState: AppState
 
     enum SettingsSection: String, CaseIterable, Identifiable {
-        case general, channels, recents, schedule, advanced, about
+        case general, channels, schedule, advanced, about
         var id: String { rawValue }
         var label: String {
             switch self {
             case .general: return "Базовые"
             case .channels: return "Каналы"
-            case .recents: return "Новое"
             case .schedule: return "Расписание"
             case .advanced: return "Дополнительно"
             case .about: return "О приложении"
@@ -23,7 +21,6 @@ struct SettingsView: View {
             switch self {
             case .general: return "gear"
             case .channels: return "list.bullet"
-            case .recents: return "clock.arrow.circlepath"
             case .schedule: return "clock"
             case .advanced: return "wrench.and.screwdriver"
             case .about: return "info.circle"
@@ -34,10 +31,6 @@ struct SettingsView: View {
     @State private var selection: SettingsSection = .general
     @State private var showKBImportInfo: Bool = false
     @State private var showJSONImportInfo: Bool = false
-    /// Snapshot of UNUserNotificationCenter authorization status — refreshed
-    /// when the General tab appears so the "Permissions denied" banner only
-    /// shows when there's actually nothing arriving.
-    @State private var notificationStatus: UNAuthorizationStatus = .notDetermined
 
     var body: some View {
         HStack(spacing: 0) {
@@ -95,7 +88,6 @@ struct SettingsView: View {
                     switch selection {
                     case .general:  generalTab
                     case .channels: channelsTab
-                    case .recents:  recentsTab
                     case .schedule: scheduleTab
                     case .advanced: advancedTab
                     case .about:    aboutTab
@@ -215,28 +207,6 @@ struct SettingsView: View {
         Task { await PollingCoordinator.shared.pollAll(appState: appState) }
     }
 
-    /// Inline rows for the "macOS denied notifications" warning. Kept as flat
-    /// Form-friendly views (Label / Text / Button) — wrapping them in a
-    /// custom HStack with `.background(...)` inside a `.formStyle(.grouped)`
-    /// Section was causing AppKit to abort on render in macOS 15.
-    @ViewBuilder
-    private var permissionDeniedRows: some View {
-        Label("macOS не разрешил уведомления", systemImage: "exclamationmark.triangle.fill")
-            .foregroundStyle(.orange)
-        Text("Без разрешения банеры не появятся в Notification Centre.")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        Button("Открыть System Settings") {
-            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.notifications") {
-                NSWorkspace.shared.open(url)
-            }
-        }
-    }
-
-    private func loadNotificationStatus() async {
-        notificationStatus = await NotificationsService.shared.authorizationStatus()
-    }
-
     private var generalTab: some View {
         Form {
             Section("База знаний") {
@@ -281,9 +251,6 @@ struct SettingsView: View {
                     get: { appState.settings.notificationsEnabled },
                     set: { appState.settings.setNotificationsEnabled($0) }
                 ))
-                if notificationStatus == .denied {
-                    permissionDeniedRows
-                }
             }
             Section("Запуск") {
                 Toggle("Запускать при входе в систему", isOn: Binding(
@@ -296,72 +263,6 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .task { await loadNotificationStatus() }
-    }
-
-    private var recentsTab: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Последние индексированные видео (\(appState.channelStore.recentVideos.count))")
-                    .font(.headline)
-                Spacer()
-                Button("Очистить") {
-                    appState.channelStore.clearRecentVideos()
-                }
-                .disabled(appState.channelStore.recentVideos.isEmpty)
-            }
-            Text("История новых видео, скачанных за последние циклы. Хранится до 50 последних.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            if appState.channelStore.recentVideos.isEmpty {
-                VStack {
-                    Spacer()
-                    Text("Пока пусто. Здесь появятся новые видео по мере индексации.")
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    VStack(spacing: 0) {
-                        ForEach(appState.channelStore.recentVideos) { v in
-                            Button {
-                                if let url = URL(string: v.youtubeURL) { NSWorkspace.shared.open(url) }
-                            } label: {
-                                HStack(spacing: 8) {
-                                    Image(systemName: "play.rectangle.fill")
-                                        .foregroundStyle(.secondary)
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(v.title ?? v.videoId)
-                                            .font(.body)
-                                            .lineLimit(1)
-                                            .truncationMode(.tail)
-                                        Text("\(v.channelName) · \(SettingsView.relativeTime(v.indexedAt))")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                }
-                                .padding(.vertical, 6)
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            Divider()
-                        }
-                    }
-                }
-            }
-        }
-        .padding(.vertical, 8)
-    }
-
-    private static func relativeTime(_ date: Date) -> String {
-        let interval = Date().timeIntervalSince(date)
-        if interval < 60 { return "только что" }
-        if interval < 3600 { return "\(Int(interval / 60)) мин назад" }
-        if interval < 86400 { return "\(Int(interval / 3600)) ч назад" }
-        return "\(Int(interval / 86400)) д назад"
     }
 
     private var scheduleTab: some View {
