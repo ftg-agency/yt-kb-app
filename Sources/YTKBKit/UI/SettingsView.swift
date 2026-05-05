@@ -215,35 +215,26 @@ struct SettingsView: View {
         Task { await PollingCoordinator.shared.pollAll(appState: appState) }
     }
 
-    private var permissionDeniedBanner: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("macOS не разрешил уведомления")
-                    .font(.callout)
-                Text("Без разрешения банеры не появятся в Notification Centre.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+    /// Inline rows for the "macOS denied notifications" warning. Kept as flat
+    /// Form-friendly views (Label / Text / Button) — wrapping them in a
+    /// custom HStack with `.background(...)` inside a `.formStyle(.grouped)`
+    /// Section was causing AppKit to abort on render in macOS 15.
+    @ViewBuilder
+    private var permissionDeniedRows: some View {
+        Label("macOS не разрешил уведомления", systemImage: "exclamationmark.triangle.fill")
+            .foregroundStyle(.orange)
+        Text("Без разрешения банеры не появятся в Notification Centre.")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        Button("Открыть System Settings") {
+            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.notifications") {
+                NSWorkspace.shared.open(url)
             }
-            Spacer()
-            Button("Открыть System Settings") {
-                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.notifications") {
-                    NSWorkspace.shared.open(url)
-                }
-            }
-            .controlSize(.small)
         }
-        .padding(8)
-        .background(Color.orange.opacity(0.12))
-        .cornerRadius(6)
     }
 
-    private func refreshNotificationStatus() {
-        Task {
-            let status = await NotificationsService.shared.authorizationStatus()
-            await MainActor.run { notificationStatus = status }
-        }
+    private func loadNotificationStatus() async {
+        notificationStatus = await NotificationsService.shared.authorizationStatus()
     }
 
     private var generalTab: some View {
@@ -291,7 +282,7 @@ struct SettingsView: View {
                     set: { appState.settings.setNotificationsEnabled($0) }
                 ))
                 if notificationStatus == .denied {
-                    permissionDeniedBanner
+                    permissionDeniedRows
                 }
             }
             Section("Запуск") {
@@ -305,7 +296,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .onAppear { refreshNotificationStatus() }
+        .task { await loadNotificationStatus() }
     }
 
     private var recentsTab: some View {
