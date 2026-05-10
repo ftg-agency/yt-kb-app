@@ -1,11 +1,49 @@
 # yt-kb · macOS menu bar app
 
-YouTube → Markdown база знаний. Скачивает субтитры с отслеживаемых каналов и
-сохраняет их как `.md`-файлы для использования с Cowork / Claude / любым
-AI-инструментом.
+Превращает YouTube-канал в локальную базу знаний из markdown-файлов, которую
+можно скормить Claude (или любой другой LLM) и фактически "общаться с автором"
+по всему его контенту.
 
-Это нативное Swift-приложение (не Electron, не Python), живёт в menu bar,
-без иконки в Dock.
+## Зачем это нужно
+
+Допустим, есть автор, которого вы смотрите регулярно — лекции, подкасты,
+техно-обзоры, что угодно. Хочется не пересматривать 200 часов видео ради
+одного тезиса, а просто спросить: "что он говорил про X?", "как он подходит
+к Y?", "сравни его позицию по Z из ранних видео и из последних".
+
+yt-kb делает это возможным:
+
+1. **Добавляете канал** — вставляете URL `https://youtube.com/@handle`.
+2. **Приложение скачивает субтитры** всех видео и складывает в папку как
+   `.md`-файлы (по одному на видео + `index.md` оглавление).
+3. **Дальше каналы опрашиваются автоматически** раз в N часов — новые видео
+   подкачиваются сами, без вашего участия.
+4. **Папку отдаёте в контекст Claude** (через Projects, Claude Code, Cowork
+   или просто перетаскиванием файлов) — и общаетесь с автором по сути его
+   же контента: цитаты, ссылки на конкретные таймкоды, кросс-ссылки между
+   видео.
+
+То есть это персональный RAG-источник на ваших любимых ютуберах, который
+сам себя обновляет.
+
+## Что вы получите на диске
+
+```
+~/Documents/yt-kbs/
+└── имя-канала-abc123/
+    ├── index.md                                ← оглавление по дате
+    ├── 2024-03-15-название-видео-VIDEOID11.md
+    ├── 2024-03-22-другое-видео-VIDEOID22.md
+    └── ...
+```
+
+Каждый `.md`-файл содержит:
+
+- YAML frontmatter (title, channel, video_id, url, published, duration,
+  view_count, language, source) — удобно фильтровать и парсить
+- H1 с заголовком, мета-блок, описание под `<details>`
+- `## Транскрипт` — субтитры, разбитые на чанки по 150 секунд, с
+  кликабельными `?t=Xs` ссылками обратно на YouTube для проверки контекста
 
 ## Установка
 
@@ -14,7 +52,7 @@ AI-инструментом.
 1. Скачать `YTKB.dmg` со страницы [Releases](../../releases/latest).
 2. Открыть `.dmg`, перетащить `YTKB.app` в `/Applications`.
 3. **Снять карантин** (приложение ad-hoc подписано, без Apple Developer ID,
-   поэтому Gatekeeper его блокирует по умолчанию):
+   поэтому Gatekeeper блокирует его по умолчанию):
    ```bash
    xattr -dr com.apple.quarantine /Applications/YTKB.app
    ```
@@ -31,9 +69,12 @@ cd yt-kb-app
 
 Скрипт скачает `yt-dlp_macos` (~36 MB), соберёт релизный бинарник через
 `swift build`, склеит `YTKB.app` bundle, ad-hoc подпишет и положит готовый
-`dist/YTKB.dmg` в `dist/`.
+`YTKB.dmg` в `dist/`.
 
 Требования: macOS 13+, Apple Silicon, Command Line Tools (Xcode.app не нужен).
+
+Это нативное Swift-приложение (не Electron, не Python), живёт в menu bar,
+без иконки в Dock.
 
 ## Первый запуск
 
@@ -53,25 +94,34 @@ cd yt-kb-app
 При первом запросе с cookies из Chrome macOS попросит разрешение на доступ
 к ключам "Chrome Safe Storage" — нажмите **"Разрешать всегда"**.
 
-## Что внутри
+## Как использовать базу знаний с Claude
+
+Несколько вариантов, от простого к продвинутому:
+
+- **Claude Code** — `cd` в папку канала, открыть Claude Code, спрашивать.
+  Он сам прочитает нужные файлы по `index.md` и grep'у.
+- **Claude Projects** — загрузить папку канала в Project, дальше любой чат
+  внутри этого Project уже видит весь контент.
+- **Cowork / Cursor / любой агент с file-доступом** — то же самое, дать
+  ему путь к папке.
+- **Свой RAG** — markdown с YAML frontmatter и таймкод-ссылками идеально
+  ложится в любой векторный индекс.
+
+## Что внутри (для технически любопытных)
 
 ### Pipeline
 
-- **Каскадный fetch_metadata (3 уровня)**: simple call → drop cookies
-  при format error или пустых сабах с cookies → aggressive
+- **Каскадный fetch_metadata (3 уровня)**: simple call → drop cookies при
+  format error или пустых сабах с cookies → aggressive
   (`--extractor-args player_client=web_safari,web,android` + permissive `-f`)
 - **Каскадный _download_subs (3 уровня)** по той же схеме
-- **Subtitle priority planner**: настраиваемый, по умолчанию
-  оригинальный язык → английский → любой; для каждого языка пробуются
-  и authrn-subs, и manual-subs
+- **Subtitle priority planner**: настраиваемый, по умолчанию оригинальный
+  язык → английский → любой; для каждого языка пробуются и auto-subs,
+  и manual-subs
 - **3 формата субтитров**: VTT (regex parser), SRV3 (XMLParser), JSON3
   (JSONDecoder); общий dedup для rolling auto-captions
-- **Markdown rendering**: YAML frontmatter (title, channel, video_id,
-  url, published, duration, view_count, language, source) + H1 + meta-блок
-  + опциональный `<details>` description + `## Транскрипт` чанками по 150 сек
-  с кликабельными `?t=Xs` ссылками обратно на YouTube
-- **index.md**: per-channel оглавление, регенерируется на каждое новое видео,
-  сортировка по дате DESC, header с counters/views
+- **index.md**: per-channel оглавление, регенерируется на каждое новое
+  видео, сортировка по дате DESC, header с counters/views
 - **Idempotency**: pre-scan KB-дерева по regex `-([\w-]{11})\.md$`
   исключает уже скачанные видео ДО любых yt-dlp вызовов
 
@@ -87,7 +137,7 @@ cd yt-kb-app
 
 - Видео без сабов попадают в queue, повторно проверяются каждые 6+ часов
 - Максимум 7 попыток за 7 дней; после этого — `permanent_no_subs`,
-  больше не пробуется но остаётся видим в UI
+  больше не пробуется, но остаётся видим в UI
 - Это нужно потому что YouTube auto-captions появляются НЕ сразу после
   публикации видео — иногда через сутки
 
@@ -105,40 +155,33 @@ cd yt-kb-app
   bookmark на KB-папку (переживает relaunch)
 - Логи: `~/Library/Logs/yt-kb/yt-kb.log`
 
-## Что получите на выходе
-
-```
-~/Documents/yt-kbs/
-└── имя-канала-abc123/
-    ├── index.md                                ← оглавление
-    ├── 2024-03-15-название-видео-VIDEOID11.md
-    └── ...
-```
-
 ## Архитектура
 
 ```
-Sources/YTKBApp/
-├── AppEntry.swift                    @main, NSApplication setup
-├── AppDelegate.swift                 NSApplicationDelegate
-├── MenuBarController.swift           NSStatusItem + NSPopover + pulse anim
-├── Logger.swift                      ~/Library/Logs/yt-kb/yt-kb.log
-├── UI/                               SwiftUI views (popover, settings, onboarding)
-├── State/                            AppState, ChannelStore, Settings (UserDefaults)
-├── YTDLP/                            Process wrapper, metadata, subs, channel resolver
-│   ├── YTDLPRunner.swift             actor — async subprocess wrapper
-│   ├── MetadataFetcher.swift         3-layer cascade
-│   ├── SubsDownloader.swift          3-layer cascade
-│   └── ChannelResolver.swift         --flat-playlist + 11-char filter + nested recurse
-├── Subs/                             SubsPlanner, VTT/SRV3/JSON3 parsers
-├── Markdown/                         Renderer, ChannelIndexBuilder, Slugify
-├── KB/                               FileNaming, KBScanner (idempotency), AutoDiscovery
-└── Polling/
-    ├── PollingScheduler.swift        NSBackgroundActivityScheduler integration
-    ├── PollingCoordinator.swift      singleton actor — atomic isPolling guard
-    ├── PollOperation.swift           one channel cycle; report with counters + retry mutations
-    ├── RetryProcessor.swift          backoff/permanent rules
-    └── NotificationsService.swift    UNUserNotificationCenter wrapper
+Sources/
+├── YTKBApp/
+│   └── AppEntry.swift                @main, NSApplication setup
+└── YTKBKit/
+    ├── AppDelegate.swift             NSApplicationDelegate
+    ├── MenuBarController.swift       NSStatusItem + NSPopover + pulse anim
+    ├── Logger.swift                  ~/Library/Logs/yt-kb/yt-kb.log
+    ├── UI/                           SwiftUI views (popover, settings, onboarding)
+    ├── State/                        AppState, ChannelStore, Settings (UserDefaults)
+    ├── YTDLP/                        Process wrapper, metadata, subs, channel resolver
+    │   ├── YTDLPRunner.swift         actor — async subprocess wrapper
+    │   ├── MetadataFetcher.swift     3-layer cascade
+    │   ├── SubsDownloader.swift      3-layer cascade
+    │   └── ChannelResolver.swift     --flat-playlist + 11-char filter + nested recurse
+    ├── Subs/                         SubsPlanner, VTT/SRV3/JSON3 parsers
+    ├── Markdown/                     Renderer, ChannelIndexBuilder, Slugify
+    ├── KB/                           FileNaming, KBScanner (idempotency), AutoDiscovery
+    ├── Update/                       in-app update checker
+    └── Polling/
+        ├── PollingScheduler.swift    NSBackgroundActivityScheduler integration
+        ├── PollingCoordinator.swift  singleton actor — atomic isPolling guard
+        ├── PollOperation.swift       one channel cycle; report with counters + retry mutations
+        ├── RetryProcessor.swift      backoff/permanent rules
+        └── NotificationsService.swift UNUserNotificationCenter wrapper
 ```
 
 ## Известные ограничения
