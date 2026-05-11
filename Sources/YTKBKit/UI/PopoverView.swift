@@ -400,11 +400,32 @@ struct PopoverView: View {
             }
             let resolver = ChannelResolver(runner: YTDLPRunner.shared, config: config)
             let lite: ResolvedChannelLite
+
+            // Path 1: HTML scrape (~500ms, no yt-dlp). Works for any public channel.
+            do {
+                let html = try await ChannelPageFetcher.shared.fetchMetadata(channelURL: raw)
+                lite = ResolvedChannelLite(
+                    name: html.name,
+                    channelId: html.channelId,
+                    channelURL: html.canonicalURL
+                )
+                Logger.shared.info("addChannel · channelPage win")
+                await MainActor.run {
+                    addResolvedName = lite.name
+                    addResolvedChannelId = lite.channelId
+                }
+                return
+            } catch {
+                Logger.shared.warn("addChannel · channelPage FAIL (\(error)) — fallback to yt-dlp quickResolve")
+            }
+
+            // Path 2: yt-dlp quickResolve (~3-10s).
             do {
                 lite = try await resolver.quickResolve(channelURL: raw)
                 Logger.shared.info("addChannel · quickResolve win")
             } catch {
-                Logger.shared.warn("addChannel · quickResolve FAIL (\(error)), falling back to full resolveMetadata")
+                Logger.shared.warn("addChannel · quickResolve FAIL (\(error)) — fallback to full resolveMetadata")
+                // Path 3: full resolveMetadata with cascade (~30s+).
                 do {
                     let full = try await resolver.resolveMetadata(channelURL: raw)
                     lite = ResolvedChannelLite(
@@ -414,7 +435,7 @@ struct PopoverView: View {
                     )
                     Logger.shared.info("addChannel · resolveMetadata fallback win")
                 } catch {
-                    Logger.shared.error("addChannel · BOTH paths failed: \(error)")
+                    Logger.shared.error("addChannel · ALL paths failed: \(error)")
                     await MainActor.run { self.addError = "\(error)" }
                     return
                 }
