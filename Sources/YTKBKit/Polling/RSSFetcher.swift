@@ -61,8 +61,7 @@ package actor RSSFetcher {
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
             throw RSSFetchError.http(http.statusCode)
         }
-        let parser = YTRSSParser()
-        let videos = try parser.parse(data: data)
+        let videos = try YTRSSParser.parseFeed(data: data)
         if videos.isEmpty { throw RSSFetchError.empty }
         return videos
     }
@@ -86,11 +85,15 @@ package final class YTRSSParser: NSObject, XMLParserDelegate {
         return f
     }()
 
-    package override init() {
-        super.init()
+    /// Convenience entry point — instantiates a parser and runs it on `data`.
+    /// Tests live in a separate module so we expose this as a static factory
+    /// rather than relying on the inherited (public) NSObject init.
+    package static func parseFeed(data: Data) throws -> [RSSVideo] {
+        let p = YTRSSParser()
+        return try p.run(on: data)
     }
 
-    package func parse(data: Data) throws -> [RSSVideo] {
+    private func run(on data: Data) throws -> [RSSVideo] {
         let p = XMLParser(data: data)
         p.delegate = self
         guard p.parse() else {

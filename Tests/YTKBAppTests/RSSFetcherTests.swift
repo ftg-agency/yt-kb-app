@@ -8,8 +8,7 @@ func rssFetcherTests() {
             throw ExpectError(message: "fixture sample-feed.xml не найден", file: "RSSFetcherTests", line: 0)
         }
         let data = try Data(contentsOf: url)
-        let parser = YTRSSParser()
-        let videos = try parser.parse(data: data)
+        let videos = try YTRSSParser.parseFeed(data: data)
         try expectEq(videos.count, 2)
         try expectEq(videos[0].videoId, "abcdefghijk")
         try expectEq(videos[0].title, "Первое видео в feed")
@@ -24,8 +23,7 @@ func rssFetcherTests() {
             <title>Empty</title>
         </feed>
         """
-        let parser = YTRSSParser()
-        let videos = try parser.parse(data: Data(xml.utf8))
+        let videos = try YTRSSParser.parseFeed(data: Data(xml.utf8))
         try expectEq(videos.count, 0)
     }
 
@@ -43,17 +41,15 @@ func rssFetcherTests() {
             </entry>
         </feed>
         """
-        let parser = YTRSSParser()
-        let videos = try parser.parse(data: Data(xml.utf8))
+        let videos = try YTRSSParser.parseFeed(data: Data(xml.utf8))
         try expectEq(videos.count, 1)
         try expectEq(videos[0].videoId, "aaaaaaaaaaa")
     }
 
     TestHarness.test("RSS parser кидает parse на кривом XML") {
         let bad = Data("<not actually xml>".utf8)
-        let parser = YTRSSParser()
         do {
-            _ = try parser.parse(data: bad)
+            _ = try YTRSSParser.parseFeed(data: bad)
             throw ExpectError(message: "ожидали что бросит, но не бросило", file: "RSSFetcherTests", line: 0)
         } catch is RSSFetchError {
             // expected
