@@ -1,6 +1,5 @@
 import AppKit
 import SwiftUI
-import UserNotifications
 import ServiceManagement
 
 extension Notification.Name {
@@ -8,7 +7,7 @@ extension Notification.Name {
 }
 
 @MainActor
-public final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency UNUserNotificationCenterDelegate {
+public final class AppDelegate: NSObject, NSApplicationDelegate {
     let appState = AppState()
     var menuBarController: MenuBarController!
     var settingsWindow: NSWindow?
@@ -52,12 +51,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency
 
         // Verify embedded yt-dlp integrity (SHA256 anti-tamper, spec §6.1)
         BinaryIntegrity.verifyEmbedded()
-
-        // Notification center delegate for click-handling
-        UNUserNotificationCenter.current().delegate = self
-
-        // Request notification authorisation in the background
-        Task { await NotificationsService.shared.requestAuthorisationIfNeeded() }
 
         // Listen for "show onboarding again" requests from SettingsView
         NotificationCenter.default.addObserver(
@@ -126,39 +119,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency
             return nil  // event consumed
         }
         return event
-    }
-
-    // MARK: - UNUserNotificationCenterDelegate
-
-    /// Called when user clicks a notification banner. We extract `channel_url`
-    /// from userInfo and ask MenuBarController to open the popover focused on it.
-    public func userNotificationCenter(
-        _ center: UNUserNotificationCenter,
-        didReceive response: UNNotificationResponse,
-        withCompletionHandler completionHandler: @escaping () -> Void
-    ) {
-        let info = response.notification.request.content.userInfo
-        let channelURL = info["channel_url"] as? String
-        Task { @MainActor in
-            if let channelURL { appState.focusChannelURL = channelURL }
-            menuBarController?.showPopover()
-            completionHandler()
-        }
-    }
-
-    /// Required so notifications still appear when our app is in foreground.
-    /// (Without this, clicks-to-open work but the banner is suppressed.)
-    public func userNotificationCenter(
-        _ center: UNUserNotificationCenter,
-        willPresent notification: UNNotification,
-        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
-    ) {
-        // If popover is open, suppress (per spec §9 — user already sees state in UI)
-        if appState.isPopoverOpen {
-            completionHandler([])
-        } else {
-            completionHandler([.banner, .sound])
-        }
     }
 
     public func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -232,7 +192,6 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, @preconcurrency
             guard let self else { return }
             Task { @MainActor in
                 guard self.appState.settings.backgroundPollingEnabled else { return }
-                if self.appState.settings.isInQuietHours() { return }
                 let interval = self.appState.settings.pollInterval.seconds
                 let last = self.appState.settings.lastScheduledRunAt ?? .distantPast
                 guard Date().timeIntervalSince(last) >= interval else { return }

@@ -15,7 +15,6 @@ struct PopoverView: View {
     @State private var addError: String?
     @State private var addResolvedName: String?
     @State private var addResolvedChannelId: String?
-    @State private var addResolvedVideoCount: Int?
     @FocusState private var addURLFocused: Bool
 
     var body: some View {
@@ -25,6 +24,9 @@ struct PopoverView: View {
             kbPathRow
             if !appState.kbDirectoryAvailable {
                 kbWarningBanner
+            }
+            if appState.botCheckActive {
+                botCheckBanner
             }
             Divider()
             channelSection
@@ -42,6 +44,27 @@ struct PopoverView: View {
         .onAppear {
             appState.refreshKBAvailability()
         }
+    }
+
+    private var botCheckBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.shield.fill")
+                .foregroundStyle(.white)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("YouTube требует подтверждение")
+                    .font(.callout)
+                    .fontWeight(.medium)
+                    .foregroundStyle(.white)
+                Text("Войдите в YouTube в выбранном браузере и нажмите «Проверить сейчас».")
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.9))
+                    .lineLimit(2)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.red)
     }
 
     private var kbWarningBanner: some View {
@@ -419,24 +442,32 @@ struct PopoverView: View {
         addError = nil
         addResolvedName = nil
         addResolvedChannelId = nil
-        addResolvedVideoCount = nil
         addResolving = true
 
         let config = appState.settings.ytdlpConfig
         Task {
             defer { Task { @MainActor in addResolving = false } }
+            let resolver = ChannelResolver(runner: YTDLPRunner.shared, config: config)
+            let lite: ResolvedChannelLite
             do {
-                let resolver = ChannelResolver(runner: YTDLPRunner.shared, config: config)
-                let result = try await resolver.resolveMetadata(channelURL: raw)
-                await MainActor.run {
-                    addResolvedName = result.name
-                    addResolvedChannelId = result.channelId
-                    addResolvedVideoCount = result.reportedTotalCount
-                }
+                lite = try await resolver.quickResolve(channelURL: raw)
             } catch {
-                await MainActor.run {
-                    self.addError = "\(error)"
+                Logger.shared.warn("quickResolve упал, идём через resolveMetadata: \(error)")
+                do {
+                    let full = try await resolver.resolveMetadata(channelURL: raw)
+                    lite = ResolvedChannelLite(
+                        name: full.name,
+                        channelId: full.channelId,
+                        channelURL: full.channelURL
+                    )
+                } catch {
+                    await MainActor.run { self.addError = "\(error)" }
+                    return
                 }
+            }
+            await MainActor.run {
+                addResolvedName = lite.name
+                addResolvedChannelId = lite.channelId
             }
         }
     }
@@ -449,7 +480,7 @@ struct PopoverView: View {
             channelId: addResolvedChannelId,
             name: name,
             addedAt: Date(),
-            videoCount: addResolvedVideoCount,
+            videoCount: nil,
             folderName: resolveExistingFolderName(name: name, url: url)
         )
         appState.channelStore.addChannel(channel)

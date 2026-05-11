@@ -37,6 +37,11 @@ package struct TrackedChannel: Codable, Identifiable, Equatable, Sendable {
     /// Total videos counted in the channel's KB folder. Refreshed after each
     /// successful poll. Used together with `videoCount` to display "X / Y".
     package var indexedCount: Int = 0
+    /// Timestamp of the last full-enumeration poll (via ChannelResolver). nil
+    /// for channels added before v2.0.0. Used to decide when to fall back from
+    /// the lightweight RSS path to a full yt-dlp pass — once per ~7 days as a
+    /// safety net against missed RSS deltas.
+    package var lastFullReconcileAt: Date? = nil
 
     package init(
         url: String,
@@ -52,7 +57,8 @@ package struct TrackedChannel: Codable, Identifiable, Equatable, Sendable {
         folderName: String? = nil,
         lastPollDownloaded: Int = 0,
         lastPollSkipped: Int = 0,
-        indexedCount: Int = 0
+        indexedCount: Int = 0,
+        lastFullReconcileAt: Date? = nil
     ) {
         self.url = url
         self.channelId = channelId
@@ -68,6 +74,7 @@ package struct TrackedChannel: Codable, Identifiable, Equatable, Sendable {
         self.lastPollDownloaded = lastPollDownloaded
         self.lastPollSkipped = lastPollSkipped
         self.indexedCount = indexedCount
+        self.lastFullReconcileAt = lastFullReconcileAt
     }
 
     /// Custom decoder so older state.json files (without the new
@@ -89,6 +96,7 @@ package struct TrackedChannel: Codable, Identifiable, Equatable, Sendable {
         lastPollDownloaded = try c.decodeIfPresent(Int.self, forKey: .lastPollDownloaded) ?? 0
         lastPollSkipped = try c.decodeIfPresent(Int.self, forKey: .lastPollSkipped) ?? 0
         indexedCount = try c.decodeIfPresent(Int.self, forKey: .indexedCount) ?? 0
+        lastFullReconcileAt = try c.decodeIfPresent(Date.self, forKey: .lastFullReconcileAt)
     }
 
     /// Returns the effective interval in seconds (or nil if "manual only").

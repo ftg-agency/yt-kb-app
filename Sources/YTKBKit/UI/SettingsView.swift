@@ -246,12 +246,6 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Section("Уведомления") {
-                Toggle("Сообщать о новых видео и ошибках", isOn: Binding(
-                    get: { appState.settings.notificationsEnabled },
-                    set: { appState.settings.setNotificationsEnabled($0) }
-                ))
-            }
             Section("Запуск") {
                 Toggle("Запускать при входе в систему", isOn: Binding(
                     get: { appState.settings.launchAtLogin },
@@ -300,6 +294,14 @@ struct SettingsView: View {
                     ),
                     in: 1...4
                 )
+                Stepper(
+                    "Видео в канале параллельно: \(appState.settings.maxConcurrentVideos)",
+                    value: Binding(
+                        get: { appState.settings.maxConcurrentVideos },
+                        set: { appState.settings.setMaxConcurrentVideos($0) }
+                    ),
+                    in: 1...8
+                )
                 Text("Больше — быстрее, но YouTube может временно ограничить доступ.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -312,42 +314,6 @@ struct SettingsView: View {
                 Text("Если ноутбук закрыт и работает от батареи — macOS всё равно может приостановить работу.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            }
-            Section("Тихие часы") {
-                Toggle("Не опрашивать в выбранные часы", isOn: Binding(
-                    get: { appState.settings.quietHoursEnabled },
-                    set: {
-                        appState.settings.setQuietHours(
-                            enabled: $0,
-                            start: appState.settings.quietHoursStart,
-                            end: appState.settings.quietHoursEnd
-                        )
-                    }
-                ))
-                if appState.settings.quietHoursEnabled {
-                    HStack {
-                        Stepper("С \(appState.settings.quietHoursStart):00", value: Binding(
-                            get: { appState.settings.quietHoursStart },
-                            set: {
-                                appState.settings.setQuietHours(
-                                    enabled: true,
-                                    start: $0,
-                                    end: appState.settings.quietHoursEnd
-                                )
-                            }
-                        ), in: 0...23)
-                        Stepper("До \(appState.settings.quietHoursEnd):00", value: Binding(
-                            get: { appState.settings.quietHoursEnd },
-                            set: {
-                                appState.settings.setQuietHours(
-                                    enabled: true,
-                                    start: appState.settings.quietHoursStart,
-                                    end: $0
-                                )
-                            }
-                        ), in: 0...23)
-                    }
-                }
             }
             Section("Сеть") {
                 HStack {

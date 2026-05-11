@@ -47,11 +47,6 @@ package final class PollingScheduler {
                     completion(.finished)
                     return
                 }
-                if appState.settings.isInQuietHours() {
-                    Logger.shared.info("Quiet hours: skipping scheduled poll")
-                    completion(.deferred)
-                    return
-                }
                 Logger.shared.info("Scheduled poll fired")
                 await PollingCoordinator.shared.pollAll(appState: appState, trigger: .scheduled)
                 completion(.finished)

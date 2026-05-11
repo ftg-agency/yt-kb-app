@@ -12,6 +12,7 @@ func runAll() {
     TestHarness.suite("KBMigrator", migratorTests)
     TestHarness.suite("KBConsolidator", consolidatorTests)
     TestHarness.suite("Scheduler/Interval", schedulerIntervalTests)
+    TestHarness.suite("RSSFetcher", rssFetcherTests)
     exit(Int32(TestHarness.summary()))
 }
 

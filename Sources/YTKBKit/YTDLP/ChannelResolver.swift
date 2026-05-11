@@ -10,6 +10,14 @@ struct ResolvedChannel {
     let reportedTotalCount: Int?
 }
 
+/// Lightweight resolve result used by the "Add channel" flow. Holds only the
+/// data needed to show "канал найден" + persist as TrackedChannel.
+package struct ResolvedChannelLite: Sendable {
+    package let name: String
+    package let channelId: String?
+    package let channelURL: String
+}
+
 package actor ChannelResolver {
     private let runner: YTDLPRunner
     private let config: YTDLPConfig
@@ -71,6 +79,48 @@ package actor ChannelResolver {
             videos: merged.videos,
             reportedTotalCount: merged.reportedTotal
         )
+    }
+
+    /// Fast path for "Add channel": single yt-dlp call with `--playlist-items 0`
+    /// so yt-dlp returns channel-level metadata without enumerating any entries.
+    /// Saves up to ~15 heavyweight enumerations vs. `resolveMetadata`. Caller
+    /// should fall back to `resolveMetadata` on any failure (geoblock, weird
+    /// channel URL, missing fields).
+    func quickResolve(channelURL: String) async throws -> ResolvedChannelLite {
+        let normalised = Self.normaliseChannelURL(channelURL)
+        var args = config.baseArgs
+        args.append(contentsOf: [
+            "--playlist-items", "0",
+            "--print", "%(channel)s|%(channel_id)s|%(channel_url)s",
+            "--no-warnings",
+            normalised
+        ])
+        let result = try await runner.run(args, timeout: 20)
+        guard result.exitCode == 0 else {
+            throw YTDLPError.nonZeroExit(result.exitCode, result.stderr.lastNonEmptyLine)
+        }
+        guard let raw = String(data: result.stdout, encoding: .utf8) else {
+            throw YTDLPError.decodeFailed("quickResolve: stdout не UTF-8")
+        }
+        guard let line = raw.split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) else {
+            throw YTDLPError.decodeFailed("quickResolve: пустой stdout")
+        }
+        let parts = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count >= 2 else {
+            throw YTDLPError.decodeFailed("quickResolve: неожиданный формат: \(line)")
+        }
+        let rawName = parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawName.isEmpty, rawName != "NA" else {
+            throw YTDLPError.decodeFailed("quickResolve: имя канала не получено")
+        }
+        let rawId = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+        let channelId = (rawId.isEmpty || rawId == "NA") ? nil : rawId
+        let rawURL = parts.count >= 3
+            ? parts[2].trimmingCharacters(in: .whitespacesAndNewlines)
+            : ""
+        let url = (rawURL.isEmpty || rawURL == "NA") ? channelURL : rawURL
+        Logger.shared.info("quickResolve: \(rawName) (\(channelId ?? "no-id"))")
+        return ResolvedChannelLite(name: rawName, channelId: channelId, channelURL: url)
     }
 
     func listVideos(channelURL: String) async throws -> [VideoRef] {

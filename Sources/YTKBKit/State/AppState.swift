@@ -57,8 +57,13 @@ final class AppState: ObservableObject {
     /// Per-channel progress while polling. Keyed by channel URL.
     @Published var channelProgress: [String: ChannelProgress] = [:]
 
-    /// True while NSPopover is shown (so notifications can suppress themselves).
+    /// True while NSPopover is shown.
     @Published var isPopoverOpen: Bool = false
+
+    /// True when YouTube returned a bot-check on the most recent poll attempt.
+    /// Drives the red banner in the popover and the red tint on the menu-bar
+    /// icon. Cleared when any video gets indexed successfully on a later poll.
+    @Published var botCheckActive: Bool = false
 
     /// True when KB directory is accessible. Goes false if external disk unmounted etc.
     /// Polling pauses while false; UI shows a warning banner.
@@ -91,8 +96,7 @@ final class AppState: ObservableObject {
     /// Set by AppDelegate after scheduler is constructed.
     var scheduler: PollingScheduler?
 
-    /// Set by AppDelegate to expose its showPopover() callback to other components
-    /// (notifications service uses this to open the UI when a notification is clicked).
+    /// Set by AppDelegate to expose its showPopover() callback to other components.
     var showPopover: (() -> Void)?
 
     func bootstrap() {

@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns:yt="http://www.youtube.com/xml/schemas/2015"
+      xmlns:media="http://search.yahoo.com/mrss/"
+      xmlns="http://www.w3.org/2005/Atom">
+    <link rel="self" href="http://www.youtube.com/feeds/videos.xml?channel_id=UCHnyfMqiRRG1u-2MsSQLbXA"/>
+    <id>yt:channel:HnyfMqiRRG1u-2MsSQLbXA</id>
+    <yt:channelId>HnyfMqiRRG1u-2MsSQLbXA</yt:channelId>
+    <title>Veritasium</title>
+    <link rel="alternate" href="https://www.youtube.com/channel/UCHnyfMqiRRG1u-2MsSQLbXA"/>
+    <author>
+        <name>Veritasium</name>
+        <uri>https://www.youtube.com/channel/UCHnyfMqiRRG1u-2MsSQLbXA</uri>
+    </author>
+    <published>2011-01-19T18:54:01+00:00</published>
+    <entry>
+        <id>yt:video:abcdefghijk</id>
+        <yt:videoId>abcdefghijk</yt:videoId>
+        <yt:channelId>HnyfMqiRRG1u-2MsSQLbXA</yt:channelId>
+        <title>Первое видео в feed</title>
+        <link rel="alternate" href="https://www.youtube.com/watch?v=abcdefghijk"/>
+        <author>
+            <name>Veritasium</name>
+            <uri>https://www.youtube.com/channel/UCHnyfMqiRRG1u-2MsSQLbXA</uri>
+        </author>
+        <published>2026-05-10T12:00:00+00:00</published>
+        <updated>2026-05-10T12:00:00+00:00</updated>
+    </entry>
+    <entry>
+        <id>yt:video:lmnopqrstuv</id>
+        <yt:videoId>lmnopqrstuv</yt:videoId>
+        <yt:channelId>HnyfMqiRRG1u-2MsSQLbXA</yt:channelId>
+        <title>Второе видео — short</title>
+        <link rel="alternate" href="https://www.youtube.com/watch?v=lmnopqrstuv"/>
+        <author>
+            <name>Veritasium</name>
+            <uri>https://www.youtube.com/channel/UCHnyfMqiRRG1u-2MsSQLbXA</uri>
+        </author>
+        <published>2026-05-09T08:30:00+00:00</published>
+        <updated>2026-05-09T08:30:00+00:00</updated>
+    </entry>
+</feed>
