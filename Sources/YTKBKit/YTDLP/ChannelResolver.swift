@@ -90,23 +90,17 @@ package actor ChannelResolver {
         let t0 = Date()
         let normalised = Self.normaliseChannelURL(channelURL)
         Logger.shared.info("quickResolve ▶ url=\(channelURL) → normalised=\(normalised)")
-        // Strip --sleep-requests — оно добавляет ~1с на каждый внутренний
-        // запрос yt-dlp (10-15 запросов на channel page = ~10-15с тупо
-        // ждём). Для одной добавки канала rate-limit не критичен.
-        var args = config.baseArgs
-        if let i = args.firstIndex(of: "--sleep-requests"), i + 1 < args.count {
-            args.removeSubrange(i...(i+1))
-        }
-        // --dump-single-json + --playlist-items 0 reliably returns channel-level
-        // JSON (no entries). --print с %(channel)s часто возвращает пустой
-        // stdout на каналах где `--playlist-items 0` не материализует поля.
-        args.append(contentsOf: [
+        // Минимальный args — без cookies (channel metadata публично,
+        // декриптование Chrome keychain съедает ~5-8с) и без --sleep-requests
+        // (один запрос, rate-limit не нужен). Если упало — fallback на
+        // resolveMetadata уже c полным config.baseArgs.
+        let args = [
             "--flat-playlist",
             "--playlist-items", "0",
             "--dump-single-json",
             "--no-warnings",
             normalised
-        ])
+        ]
         let result: YTDLPResult
         do {
             result = try await runner.run(args, timeout: 20)
