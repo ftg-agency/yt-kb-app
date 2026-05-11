@@ -86,6 +86,10 @@ package final class YTRSSParser: NSObject, XMLParserDelegate {
         return f
     }()
 
+    package override init() {
+        super.init()
+    }
+
     package func parse(data: Data) throws -> [RSSVideo] {
         let p = XMLParser(data: data)
         p.delegate = self

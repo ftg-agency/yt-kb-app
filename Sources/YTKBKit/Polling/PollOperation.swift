@@ -231,8 +231,11 @@ actor PollOperation {
         let maxConc = maxConcurrentVideos
         let phase: ChannelProgress.Phase = isRetry ? .retrying : .processing
 
-        // Local copies so we can pass into Sendable closures without aliasing
-        // the inout `report`.
+        // Pull a snapshot from inout into local lets so we can read/write
+        // report without the body closure capturing inout from the outer
+        // function — Swift 6's strict concurrency dislikes inout captures
+        // crossing the withTaskGroup body boundary. Merge back at the end.
+        var localReport = report
         let kb = kbRoot
         let ch = channel
 
@@ -241,20 +244,17 @@ actor PollOperation {
             var inFlight = 0
             var stopped = false
 
-            func tryStart() {
-                while inFlight < maxConc, nextIndex < items.count, !stopped {
-                    if cancellation.isCancelled { stopped = true; break }
-                    let (ref, priorEntry) = items[nextIndex]
-                    nextIndex += 1
-                    inFlight += 1
-                    group.addTask { [self] in
-                        let outcome = await self.processVideo(ref: ref, kbRoot: kb, channel: ch)
-                        return (ref, priorEntry, outcome)
-                    }
+            // Seed initial burst
+            while inFlight < maxConc && nextIndex < items.count && !stopped {
+                if cancellation.isCancelled { stopped = true; break }
+                let (ref, priorEntry) = items[nextIndex]
+                nextIndex += 1
+                inFlight += 1
+                group.addTask { [self] in
+                    let outcome = await self.processVideo(ref: ref, kbRoot: kb, channel: ch)
+                    return (ref, priorEntry, outcome)
                 }
             }
-
-            tryStart()
 
             while let (ref, priorEntry, vpo) = await group.next() {
                 inFlight -= 1
@@ -275,30 +275,43 @@ actor PollOperation {
                     channelURL: ch.url,
                     channelName: ch.name,
                     isRetry: isRetry,
-                    report: &report,
+                    report: &localReport,
                     priorEntry: priorEntry
                 )
 
-                if report.resolvedFolderName == nil, let pin = vpo.resolvedFolderName {
-                    report.resolvedFolderName = pin
+                if localReport.resolvedFolderName == nil, let pin = vpo.resolvedFolderName {
+                    localReport.resolvedFolderName = pin
                 }
                 if case .ok = vpo.outcome {
                     onIndexed?(IndexedVideoEvent(videoId: ref.videoId, title: ref.title))
                 }
                 if cancellation.isCancelled {
-                    report.cancelled = true
+                    localReport.cancelled = true
                     stopped = true
                     group.cancelAll()
                     continue
                 }
-                if report.botCheckHit {
+                if localReport.botCheckHit {
                     stopped = true
                     group.cancelAll()
                     continue
                 }
-                if !stopped { tryStart() }
+
+                // Refill the window
+                while inFlight < maxConc && nextIndex < items.count && !stopped {
+                    if cancellation.isCancelled { stopped = true; break }
+                    let (ref2, priorEntry2) = items[nextIndex]
+                    nextIndex += 1
+                    inFlight += 1
+                    group.addTask { [self] in
+                        let outcome = await self.processVideo(ref: ref2, kbRoot: kb, channel: ch)
+                        return (ref2, priorEntry2, outcome)
+                    }
+                }
             }
         }
+
+        report = localReport
     }
 
     private func applyOutcome(

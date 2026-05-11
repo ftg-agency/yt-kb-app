@@ -193,12 +193,7 @@ actor PollingCoordinator {
             if queue.isEmpty { break drain }
         }
 
-        // Bot-check flag is propagated to AppState from pollOneInternal already;
-        // worker's defer releases the slot immediately so a pollOne arriving
-        // right now spins up a fresh worker.
-        _ = totalDownloaded
-        _ = botHit
-        _ = initialTrigger
+        Logger.shared.info("Poll cycle done: downloaded=\(totalDownloaded) botHit=\(botHit) trigger=\(initialTrigger)")
     }
 
     private func pollOneInternal(
