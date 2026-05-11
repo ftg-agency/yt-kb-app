@@ -54,6 +54,12 @@ package actor ChannelPageFetcher {
             forHTTPHeaderField: "User-Agent"
         )
         request.setValue("ru,en;q=0.9", forHTTPHeaderField: "Accept-Language")
+        // SOCS=CAI is YouTube's "consent accepted" cookie. Without it YouTube
+        // serves a GDPR consent splash ("Прежде чем перейти к YouTube") for
+        // every request from the EU, with the same HTML 200 OK for any URL —
+        // even a non-existent channel. PREF locks the language to English so
+        // og:title parsing is predictable.
+        request.setValue("SOCS=CAI; PREF=hl=en&gl=US", forHTTPHeaderField: "Cookie")
 
         let data: Data
         let response: URLResponse
@@ -71,15 +77,42 @@ package actor ChannelPageFetcher {
             throw FetchError.parse("HTML не UTF-8")
         }
 
+        // Defensive — if SOCS cookie didn't work, the consent splash still
+        // returns a generic title and no channelId. Treat as failure so the
+        // caller can fall through to yt-dlp (which has its own consent bypass).
+        if Self.isConsentPage(html) {
+            Logger.shared.warn("channelPage ◀ consent screen returned (SOCS bypass failed?) in \(msSince(t0))")
+            throw FetchError.parse("YouTube consent screen — нужен альтернативный путь")
+        }
+
         guard let name = extractName(from: html) else {
             Logger.shared.warn("channelPage ◀ no og:title in \(msSince(t0)) (body=\(data.count)B)")
             throw FetchError.parse("og:title не найден")
         }
-        let channelId = extractChannelId(from: html)
+        // Real channel pages always have a UCxxxx id embedded. If we got a
+        // 200 OK back but no channelId, this is YouTube's "channel not found"
+        // page — same HTML status as a real one, distinguished only by
+        // missing meta. Treat as not-found.
+        guard let channelId = extractChannelId(from: html) else {
+            Logger.shared.warn("channelPage ◀ no channelId in HTML in \(msSince(t0)) — likely 404")
+            throw FetchError.parse("Канал не существует (нет channelId в HTML)")
+        }
         let canonical = extractCanonicalURL(from: html) ?? channelURL
 
-        Logger.shared.info("channelPage ◀ ok in \(msSince(t0)): \(name) (\(channelId ?? "no-id"))")
+        Logger.shared.info("channelPage ◀ ok in \(msSince(t0)): \(name) (\(channelId))")
         return Result(name: name, channelId: channelId, canonicalURL: canonical)
+    }
+
+    /// Markers that identify YouTube's GDPR consent splash page.
+    private static func isConsentPage(_ html: String) -> Bool {
+        let markers = [
+            "Прежде чем перейти к YouTube",
+            "Before you continue to YouTube",
+            "Bevor Sie zu YouTube weitergehen",
+            "Avant de passer à YouTube",
+            "consent.youtube.com"
+        ]
+        return markers.contains { html.contains($0) }
     }
 
     private nonisolated func msSince(_ date: Date) -> String {
