@@ -90,10 +90,20 @@ package actor ChannelResolver {
         let t0 = Date()
         let normalised = Self.normaliseChannelURL(channelURL)
         Logger.shared.info("quickResolve ▶ url=\(channelURL) → normalised=\(normalised)")
+        // Strip --sleep-requests — оно добавляет ~1с на каждый внутренний
+        // запрос yt-dlp (10-15 запросов на channel page = ~10-15с тупо
+        // ждём). Для одной добавки канала rate-limit не критичен.
         var args = config.baseArgs
+        if let i = args.firstIndex(of: "--sleep-requests"), i + 1 < args.count {
+            args.removeSubrange(i...(i+1))
+        }
+        // --dump-single-json + --playlist-items 0 reliably returns channel-level
+        // JSON (no entries). --print с %(channel)s часто возвращает пустой
+        // stdout на каналах где `--playlist-items 0` не материализует поля.
         args.append(contentsOf: [
+            "--flat-playlist",
             "--playlist-items", "0",
-            "--print", "%(channel)s|%(channel_id)s|%(channel_url)s",
+            "--dump-single-json",
             "--no-warnings",
             normalised
         ])
@@ -108,38 +118,38 @@ package actor ChannelResolver {
             Logger.shared.warn("quickResolve ◀ exit=\(result.exitCode) after \(ms(since: t0)): \(result.stderr.lastNonEmptyLine.prefix(160))")
             throw YTDLPError.nonZeroExit(result.exitCode, result.stderr.lastNonEmptyLine)
         }
-        guard let raw = String(data: result.stdout, encoding: .utf8) else {
-            Logger.shared.warn("quickResolve ◀ stdout не UTF-8 после \(ms(since: t0))")
-            throw YTDLPError.decodeFailed("quickResolve: stdout не UTF-8")
+        let response: FlatPlaylistResponse
+        do {
+            response = try JSONDecoder().decode(FlatPlaylistResponse.self, from: result.stdout)
+        } catch {
+            Logger.shared.warn("quickResolve ◀ JSON decode FAIL after \(ms(since: t0)) (stdout=\(result.stdout.count)B): \(error)")
+            throw YTDLPError.decodeFailed("quickResolve: \(error)")
         }
-        let stdoutPreview = String(raw.prefix(200)).replacingOccurrences(of: "\n", with: "⏎")
-        Logger.shared.info("quickResolve · stdout=\(stdoutPreview)")
-        guard let line = raw.split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) else {
-            Logger.shared.warn("quickResolve ◀ пустой stdout после \(ms(since: t0))")
-            throw YTDLPError.decodeFailed("quickResolve: пустой stdout")
-        }
-        let parts = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
-        guard parts.count >= 2 else {
-            Logger.shared.warn("quickResolve ◀ bad format: \(line)")
-            throw YTDLPError.decodeFailed("quickResolve: неожиданный формат: \(line)")
-        }
-        let rawName = parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !rawName.isEmpty, rawName != "NA" else {
-            Logger.shared.warn("quickResolve ◀ no channel name in: \(line)")
+        let name = response.displayName
+        guard !name.isEmpty, name != "Unknown" else {
+            Logger.shared.warn("quickResolve ◀ no channel name after \(ms(since: t0))")
             throw YTDLPError.decodeFailed("quickResolve: имя канала не получено")
         }
-        let rawId = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
-        let channelId = (rawId.isEmpty || rawId == "NA") ? nil : rawId
-        let rawURL = parts.count >= 3
-            ? parts[2].trimmingCharacters(in: .whitespacesAndNewlines)
-            : ""
-        let url = (rawURL.isEmpty || rawURL == "NA") ? channelURL : rawURL
-        Logger.shared.info("quickResolve ◀ ok in \(ms(since: t0)): \(rawName) (\(channelId ?? "no-id"))")
-        return ResolvedChannelLite(name: rawName, channelId: channelId, channelURL: url)
+        let channelId = response.channelId ?? response.uploaderId
+        let url = response.channelUrl ?? normalised
+        Logger.shared.info("quickResolve ◀ ok in \(ms(since: t0)): \(name) (\(channelId ?? "no-id"))")
+        return ResolvedChannelLite(name: name, channelId: channelId, channelURL: url)
     }
 
     private nonisolated func ms(since: Date) -> String {
         "\(Int(Date().timeIntervalSince(since) * 1000))ms"
+    }
+
+    /// Detects yt-dlp's "channel does not have a {shorts,streams,live} tab"
+    /// stderr message. Deterministic — same answer regardless of player_client,
+    /// so detecting it lets fetchEntries skip the rest of the cascade.
+    private static func isMissingTabError(_ stderr: String) -> Bool {
+        let lower = stderr.lowercased()
+        return lower.contains("does not have a shorts tab")
+            || lower.contains("does not have a streams tab")
+            || lower.contains("does not have a live tab")
+            || lower.contains("does not have a videos tab")
+            || (lower.contains("this channel does not have") && lower.contains("tab"))
     }
 
     func listVideos(channelURL: String) async throws -> [VideoRef] {
@@ -282,6 +292,13 @@ package actor ChannelResolver {
             } catch {
                 Logger.shared.warn("fetchEntries · clients=\(clients) FAIL in \(ms(since: tClient)): \(error)")
                 lastError = error
+                // Deterministic "no such tab" — don't waste 4 more player_clients
+                // (yt-dlp returns same answer for all, each call ~17-27s due to
+                // --sleep-requests). Abort cascade for this tab.
+                if Self.isMissingTabError("\(error)") {
+                    Logger.shared.info("fetchEntries · tab отсутствует — обрываем каскад")
+                    break
+                }
                 continue
             }
         }
