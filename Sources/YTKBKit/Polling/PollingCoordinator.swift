@@ -93,7 +93,12 @@ actor PollingCoordinator {
     /// Channels enqueued during awaits inside this loop ARE picked up — the
     /// `while !queue.isEmpty` check re-evaluates after every batch.
     private func runWorker(appState: AppState, initialTrigger: PollTrigger) async {
-        defer { workerRunning = false }
+        let tWorkerStart = Date()
+        Logger.shared.info("runWorker ▶ trigger=\(initialTrigger) queue=\(queue.count)")
+        defer {
+            workerRunning = false
+            Logger.shared.info("runWorker ◀ done in \(Int(Date().timeIntervalSince(tWorkerStart) * 1000))ms")
+        }
         cancellation.reset()
 
         let (kbRoot, config, kbAvailable) = await MainActor.run {
@@ -157,6 +162,7 @@ actor PollingCoordinator {
                 queue.removeFirst(batchSize)
                 for ch in batch { inflight.insert(ch.url) }
                 publishQueueSize(appState: appState)
+                Logger.shared.info("runWorker · batch=\(batch.count) (\(batch.map(\.name).joined(separator: ", "))) maxConcChannels=\(maxConcurrent)")
 
                 let reports = await withTaskGroup(of: PollChannelReport.self, returning: [PollChannelReport].self) { group in
                     for ch in batch {
@@ -229,17 +235,8 @@ actor PollingCoordinator {
                     appState.channelProgress[channelURL] = event
                 }
             },
-            onIndexed: { [appState, channel] indexed in
-                let event = RecentVideo(
-                    videoId: indexed.videoId,
-                    title: indexed.title,
-                    channelURL: channel.url,
-                    channelName: channel.name,
-                    indexedAt: Date()
-                )
-                Task { @MainActor in
-                    appState.channelStore.appendRecentVideo(event)
-                }
+            onIndexed: { [channel] indexed in
+                Logger.shared.info("indexed · \(channel.name) · \(indexed.videoId) · \(indexed.title ?? "—")")
             }
         )
         await MainActor.run {

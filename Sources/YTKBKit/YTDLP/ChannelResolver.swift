@@ -87,7 +87,9 @@ package actor ChannelResolver {
     /// should fall back to `resolveMetadata` on any failure (geoblock, weird
     /// channel URL, missing fields).
     func quickResolve(channelURL: String) async throws -> ResolvedChannelLite {
+        let t0 = Date()
         let normalised = Self.normaliseChannelURL(channelURL)
+        Logger.shared.info("quickResolve ▶ url=\(channelURL) → normalised=\(normalised)")
         var args = config.baseArgs
         args.append(contentsOf: [
             "--playlist-items", "0",
@@ -95,22 +97,35 @@ package actor ChannelResolver {
             "--no-warnings",
             normalised
         ])
-        let result = try await runner.run(args, timeout: 20)
+        let result: YTDLPResult
+        do {
+            result = try await runner.run(args, timeout: 20)
+        } catch {
+            Logger.shared.warn("quickResolve ◀ runner threw after \(ms(since: t0)): \(error)")
+            throw error
+        }
         guard result.exitCode == 0 else {
+            Logger.shared.warn("quickResolve ◀ exit=\(result.exitCode) after \(ms(since: t0)): \(result.stderr.lastNonEmptyLine.prefix(160))")
             throw YTDLPError.nonZeroExit(result.exitCode, result.stderr.lastNonEmptyLine)
         }
         guard let raw = String(data: result.stdout, encoding: .utf8) else {
+            Logger.shared.warn("quickResolve ◀ stdout не UTF-8 после \(ms(since: t0))")
             throw YTDLPError.decodeFailed("quickResolve: stdout не UTF-8")
         }
+        let stdoutPreview = String(raw.prefix(200)).replacingOccurrences(of: "\n", with: "⏎")
+        Logger.shared.info("quickResolve · stdout=\(stdoutPreview)")
         guard let line = raw.split(separator: "\n", omittingEmptySubsequences: true).first.map(String.init) else {
+            Logger.shared.warn("quickResolve ◀ пустой stdout после \(ms(since: t0))")
             throw YTDLPError.decodeFailed("quickResolve: пустой stdout")
         }
         let parts = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
         guard parts.count >= 2 else {
+            Logger.shared.warn("quickResolve ◀ bad format: \(line)")
             throw YTDLPError.decodeFailed("quickResolve: неожиданный формат: \(line)")
         }
         let rawName = parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
         guard !rawName.isEmpty, rawName != "NA" else {
+            Logger.shared.warn("quickResolve ◀ no channel name in: \(line)")
             throw YTDLPError.decodeFailed("quickResolve: имя канала не получено")
         }
         let rawId = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
@@ -119,8 +134,12 @@ package actor ChannelResolver {
             ? parts[2].trimmingCharacters(in: .whitespacesAndNewlines)
             : ""
         let url = (rawURL.isEmpty || rawURL == "NA") ? channelURL : rawURL
-        Logger.shared.info("quickResolve: \(rawName) (\(channelId ?? "no-id"))")
+        Logger.shared.info("quickResolve ◀ ok in \(ms(since: t0)): \(rawName) (\(channelId ?? "no-id"))")
         return ResolvedChannelLite(name: rawName, channelId: channelId, channelURL: url)
+    }
+
+    private nonisolated func ms(since: Date) -> String {
+        "\(Int(Date().timeIntervalSince(since) * 1000))ms"
     }
 
     func listVideos(channelURL: String) async throws -> [VideoRef] {
@@ -157,8 +176,10 @@ package actor ChannelResolver {
     /// dedup by video_id (preserving first occurrence so chronological order
     /// from /videos wins for channels where it matters), and merge metadata.
     private func fetchAllTabs(channelURL: String) async throws -> MergedTabs {
+        let t0 = Date()
         let urls = Self.enumerationURLs(for: channelURL)
-        Logger.shared.info("ChannelResolver: enumerating tabs \(urls)")
+        Logger.shared.info("fetchAllTabs ▶ \(urls.count) tabs: \(urls)")
+        defer { Logger.shared.info("fetchAllTabs ◀ total \(ms(since: t0))") }
 
         var responses: [(url: String, response: FlatPlaylistResponse)] = []
         var lastErrorMessage: String?
@@ -231,7 +252,9 @@ package actor ChannelResolver {
     ]
 
     private func fetchEntries(channelURL: String) async throws -> FlatPlaylistResponse {
+        let tStart = Date()
         let normalised = Self.normaliseChannelURL(channelURL)
+        Logger.shared.info("fetchEntries ▶ \(normalised)")
 
         var lastError: Error?
         var bestResponse: FlatPlaylistResponse?
@@ -239,12 +262,13 @@ package actor ChannelResolver {
         var allCounts: [(client: String, count: Int)] = []
 
         for clients in Self.playerClientCascade {
+            let tClient = Date()
             do {
                 let response = try await fetchOnce(url: normalised, playerClients: clients)
                 let count = response.entries?.count ?? 0
                 let reported = response.playlistCount ?? -1
                 allCounts.append((clients, count))
-                Logger.shared.info("ChannelResolver: clients=\(clients) → \(count) entries (yt-dlp reports playlist_count=\(reported))")
+                Logger.shared.info("fetchEntries · clients=\(clients) → \(count) entries (reported=\(reported)) in \(ms(since: tClient))")
                 if count > bestCount {
                     bestResponse = response
                     bestCount = count
@@ -256,7 +280,7 @@ package actor ChannelResolver {
                     break
                 }
             } catch {
-                Logger.shared.warn("ChannelResolver: clients=\(clients) failed: \(error)")
+                Logger.shared.warn("fetchEntries · clients=\(clients) FAIL in \(ms(since: tClient)): \(error)")
                 lastError = error
                 continue
             }
@@ -266,12 +290,13 @@ package actor ChannelResolver {
             let reported = best.playlistCount ?? -1
             let summary = allCounts.map { "\($0.client)=\($0.count)" }.joined(separator: ", ")
             if reported > 0 && bestCount < reported - 5 {
-                Logger.shared.warn("ChannelResolver: BEST got \(bestCount) of \(reported) reported (yt-dlp can't enumerate the rest). Per-client: \(summary)")
+                Logger.shared.warn("fetchEntries ◀ BEST=\(bestCount)/\(reported) reported (incomplete) in \(ms(since: tStart)). Per-client: \(summary)")
             } else {
-                Logger.shared.info("ChannelResolver: BEST = \(bestCount) entries. Per-client: \(summary)")
+                Logger.shared.info("fetchEntries ◀ BEST=\(bestCount) entries in \(ms(since: tStart)). Per-client: \(summary)")
             }
             return best
         }
+        Logger.shared.warn("fetchEntries ◀ all clients failed in \(ms(since: tStart))")
         throw lastError ?? YTDLPError.decodeFailed("ChannelResolver: all attempts failed")
     }
 

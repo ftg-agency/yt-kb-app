@@ -77,18 +77,34 @@ actor YTDLPRunner {
     func run(_ args: [String], timeout: TimeInterval = 300) async throws -> YTDLPResult {
         var attempt = 0
         let maxAttempts = 3
+        let preview = Self.argsPreview(args)
         while true {
             attempt += 1
+            let t0 = Date()
+            Logger.shared.info("yt-dlp ▶ attempt=\(attempt)/\(maxAttempts) args=\(preview)")
             let result = try await runOnce(args: args)
-            if result.exitCode == 0 { return result }
+            let ms = Int(Date().timeIntervalSince(t0) * 1000)
+            if result.exitCode == 0 {
+                Logger.shared.info("yt-dlp ◀ ok in \(ms)ms (stdout=\(result.stdout.count)B)")
+                return result
+            }
+            Logger.shared.warn("yt-dlp ◀ exit=\(result.exitCode) in \(ms)ms · stderr=\(result.stderr.lastNonEmptyLine.prefix(160))")
             if attempt < maxAttempts, Self.isTransientNetworkError(result.stderr) {
                 let delaySeconds = UInt64(pow(2.0, Double(attempt - 1)))  // 1, 2, 4
-                Logger.shared.warn("yt-dlp transient network error (attempt \(attempt)/\(maxAttempts)), backing off \(delaySeconds)s")
+                Logger.shared.warn("yt-dlp transient retry (attempt \(attempt)/\(maxAttempts)) backoff=\(delaySeconds)s")
                 try? await Task.sleep(nanoseconds: delaySeconds * 1_000_000_000)
                 continue
             }
             return result
         }
+    }
+
+    /// Single-line preview of args for logs. Truncates the URL so the line
+    /// stays readable, keeps every flag.
+    private static func argsPreview(_ args: [String]) -> String {
+        let joined = args.joined(separator: " ")
+        if joined.count <= 200 { return joined }
+        return String(joined.prefix(200)) + "…"
     }
 
     private func runOnce(args: [String]) async throws -> YTDLPResult {

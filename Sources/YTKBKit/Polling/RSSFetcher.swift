@@ -45,24 +45,35 @@ package actor RSSFetcher {
     }
 
     package func fetchLatest(channelId: String) async throws -> [RSSVideo] {
-        guard channelId.hasPrefix("UC") else { throw RSSFetchError.missingChannelId }
+        let t0 = Date()
+        guard channelId.hasPrefix("UC") else {
+            Logger.shared.warn("RSS · bad channelId=\(channelId.prefix(20))")
+            throw RSSFetchError.missingChannelId
+        }
         let urlString = "https://www.youtube.com/feeds/videos.xml?channel_id=\(channelId)"
         guard let url = URL(string: urlString) else {
             throw RSSFetchError.parse("кривой URL: \(urlString)")
         }
+        Logger.shared.info("RSS ▶ \(channelId.prefix(24))…")
 
         let data: Data
         let response: URLResponse
         do {
             (data, response) = try await session.data(from: url)
         } catch {
+            Logger.shared.warn("RSS ◀ network FAIL in \(Int(Date().timeIntervalSince(t0) * 1000))ms: \(error)")
             throw RSSFetchError.network("\(error)")
         }
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+            Logger.shared.warn("RSS ◀ HTTP \(http.statusCode) in \(Int(Date().timeIntervalSince(t0) * 1000))ms")
             throw RSSFetchError.http(http.statusCode)
         }
         let videos = try YTRSSParser.parseFeed(data: data)
-        if videos.isEmpty { throw RSSFetchError.empty }
+        if videos.isEmpty {
+            Logger.shared.warn("RSS ◀ empty feed in \(Int(Date().timeIntervalSince(t0) * 1000))ms (body=\(data.count)B)")
+            throw RSSFetchError.empty
+        }
+        Logger.shared.info("RSS ◀ ok in \(Int(Date().timeIntervalSince(t0) * 1000))ms (\(videos.count) videos, body=\(data.count)B)")
         return videos
     }
 }

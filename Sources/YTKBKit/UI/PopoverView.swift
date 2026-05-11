@@ -30,10 +30,6 @@ struct PopoverView: View {
             }
             Divider()
             channelSection
-            if !appState.channelStore.recentVideos.isEmpty {
-                Divider()
-                recentVideosSection
-            }
             Divider()
             footerButtons
         }
@@ -204,57 +200,6 @@ struct PopoverView: View {
                     .lineLimit(3)
                     .padding(.horizontal, 12)
                     .padding(.bottom, 6)
-            }
-        }
-    }
-
-    private var recentVideosSection: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Новое")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button {
-                    appState.channelStore.clearRecentVideos()
-                } label: {
-                    Text("Очистить")
-                        .font(.caption2)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 12)
-            .padding(.top, 8)
-            .padding(.bottom, 4)
-            VStack(spacing: 0) {
-                ForEach(Array(appState.channelStore.recentVideos.prefix(5))) { v in
-                    Button {
-                        if let url = URL(string: v.youtubeURL) { NSWorkspace.shared.open(url) }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "play.rectangle.fill")
-                                .foregroundStyle(.secondary)
-                                .font(.caption)
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(v.title ?? v.videoId)
-                                    .font(.caption)
-                                    .lineLimit(1)
-                                    .truncationMode(.tail)
-                                Text("\(v.channelName) · \(relativeTime(v.indexedAt))")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                                    .truncationMode(.tail)
-                            }
-                            Spacer()
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 4)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
             }
         }
     }
@@ -446,13 +391,20 @@ struct PopoverView: View {
 
         let config = appState.settings.ytdlpConfig
         Task {
-            defer { Task { @MainActor in addResolving = false } }
+            let tStart = Date()
+            Logger.shared.info("addChannel ▶▶▶ \(raw)")
+            defer {
+                let ms = Int(Date().timeIntervalSince(tStart) * 1000)
+                Logger.shared.info("addChannel ◀◀◀ wallclock=\(ms)ms")
+                Task { @MainActor in addResolving = false }
+            }
             let resolver = ChannelResolver(runner: YTDLPRunner.shared, config: config)
             let lite: ResolvedChannelLite
             do {
                 lite = try await resolver.quickResolve(channelURL: raw)
+                Logger.shared.info("addChannel · quickResolve win")
             } catch {
-                Logger.shared.warn("quickResolve упал, идём через resolveMetadata: \(error)")
+                Logger.shared.warn("addChannel · quickResolve FAIL (\(error)), falling back to full resolveMetadata")
                 do {
                     let full = try await resolver.resolveMetadata(channelURL: raw)
                     lite = ResolvedChannelLite(
@@ -460,7 +412,9 @@ struct PopoverView: View {
                         channelId: full.channelId,
                         channelURL: full.channelURL
                     )
+                    Logger.shared.info("addChannel · resolveMetadata fallback win")
                 } catch {
+                    Logger.shared.error("addChannel · BOTH paths failed: \(error)")
                     await MainActor.run { self.addError = "\(error)" }
                     return
                 }

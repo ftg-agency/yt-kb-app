@@ -93,6 +93,7 @@ actor PollOperation {
     ) async -> PollChannelReport {
         var report = PollChannelReport()
         let isInitial = channel.lastPolledAt == nil
+        let tStart = Date()
 
         if cancellation.isCancelled { report.cancelled = true; return report }
 
@@ -111,9 +112,15 @@ actor PollOperation {
         let hasChannelId = (channel.channelId?.hasPrefix("UC") == true)
         let preferFull = isInitial || needsWeeklyReconcile || !hasChannelId
 
+        let pathDecision = preferFull
+            ? "full (isInitial=\(isInitial) weekly=\(needsWeeklyReconcile) hasChId=\(hasChannelId))"
+            : "rss (channelId=\(channel.channelId!.prefix(20)))"
+        Logger.shared.info("pollChannel ▶ [\(channel.name)] path=\(pathDecision) lastPolled=\(channel.lastPolledAt.map { "\($0)" } ?? "never")")
+
         let videos: [VideoRef]
         let reportedTotal: Int?
         var didFullEnum = false
+        let tResolve = Date()
 
         if preferFull {
             do {
@@ -123,8 +130,10 @@ actor PollOperation {
                 report.reportedChannelTotal = reportedTotal
                 report.resolvedChannelId = resolved.channelId
                 didFullEnum = true
+                Logger.shared.info("pollChannel · [\(channel.name)] full resolve ok in \(msSince(tResolve)): videos=\(videos.count) reported=\(reportedTotal.map(String.init) ?? "—")")
             } catch {
                 if cancellation.isCancelled { report.cancelled = true; return report }
+                Logger.shared.error("pollChannel · [\(channel.name)] full resolve FAIL in \(msSince(tResolve)): \(error)")
                 report.firstError = "не удалось получить список видео: \(error)"
                 report.botCheckHit = isBotCheck(report.firstError ?? "")
                 return report
@@ -135,9 +144,10 @@ actor PollOperation {
                 videos = rss.map { VideoRef(videoId: $0.videoId, title: $0.title) }
                 reportedTotal = nil
                 didFullEnum = false
-                Logger.shared.info("[\(channel.name)] RSS: \(videos.count) видео")
+                Logger.shared.info("pollChannel · [\(channel.name)] RSS ok in \(msSince(tResolve)): \(videos.count) видео")
             } catch {
-                Logger.shared.warn("[\(channel.name)] RSS не сработал (\(error)), переключаемся на полный enumeration")
+                Logger.shared.warn("pollChannel · [\(channel.name)] RSS FAIL (\(error)) — fallback to full enumeration")
+                let tFull = Date()
                 do {
                     let resolved = try await resolver.resolveMetadata(channelURL: channel.url)
                     videos = resolved.videos
@@ -145,8 +155,10 @@ actor PollOperation {
                     report.reportedChannelTotal = reportedTotal
                     report.resolvedChannelId = resolved.channelId
                     didFullEnum = true
+                    Logger.shared.info("pollChannel · [\(channel.name)] fallback full resolve ok in \(msSince(tFull))")
                 } catch {
                     if cancellation.isCancelled { report.cancelled = true; return report }
+                    Logger.shared.error("pollChannel · [\(channel.name)] fallback full ALSO FAIL: \(error)")
                     report.firstError = "RSS + full enumeration оба упали: \(error)"
                     report.botCheckHit = isBotCheck(report.firstError ?? "")
                     return report
@@ -168,6 +180,7 @@ actor PollOperation {
         let eligible = RetryProcessor.eligibleEntries(priorRetries)
         let totalSteps = toProcess.count + eligible.count
         let counter = ProgressCounter()
+        Logger.shared.info("pollChannel · [\(channel.name)] toProcess=\(toProcess.count) eligibleRetries=\(eligible.count) maxParallel=\(maxConcurrentVideos)")
 
         // === New videos in parallel ===
         if !toProcess.isEmpty {
@@ -190,7 +203,7 @@ actor PollOperation {
 
         // === Retry queue in parallel (after new videos finish) ===
         if !eligible.isEmpty {
-            Logger.shared.info("[\(channel.name)] обработка \(eligible.count) ретраев")
+            Logger.shared.info("pollChannel · [\(channel.name)] processing \(eligible.count) retries")
             let items = eligible.map { (VideoRef(videoId: $0.videoId, title: $0.videoTitle), $0 as RetryQueueEntry?) }
             await runParallel(
                 items: items,
@@ -208,7 +221,12 @@ actor PollOperation {
             )
         }
 
+        Logger.shared.info("pollChannel ◀ [\(channel.name)] DONE in \(msSince(tStart)) · ok=\(report.counts["ok"] ?? 0) skipped=\(report.counts["skipped"] ?? 0) noSubs=\(report.counts["no_subs"] ?? 0) error=\(report.counts["error"] ?? 0) botCheck=\(report.botCheckHit)")
         return report
+    }
+
+    nonisolated private func msSince(_ date: Date) -> String {
+        "\(Int(Date().timeIntervalSince(date) * 1000))ms"
     }
 
     /// Sliding-window TaskGroup over a list of video refs. Mutations of
@@ -368,11 +386,16 @@ actor PollOperation {
     /// atomic write → rebuild channel index. Pure async (no actor isolation),
     /// safe to invoke concurrently from a TaskGroup.
     nonisolated private func processVideo(ref: VideoRef, kbRoot: URL, channel: TrackedChannel) async -> VideoProcessOutcome {
+        let tStart = Date()
         let videoURL = ref.url
+        Logger.shared.info("processVideo ▶ \(ref.videoId) · \(ref.title?.prefix(60) ?? "—")")
         let meta: VideoMetadata
+        let tMeta = Date()
         do {
             meta = try await metadata.fetch(url: videoURL)
+            Logger.shared.info("processVideo · \(ref.videoId) meta ok in \(msSince(tMeta))")
         } catch {
+            Logger.shared.warn("processVideo · \(ref.videoId) meta FAIL in \(msSince(tMeta)): \(error)")
             return VideoProcessOutcome(outcome: .error(message: "метаданные: \(error)"), resolvedFolderName: nil)
         }
 
@@ -387,17 +410,20 @@ actor PollOperation {
 
         let plan = SubsPlanner.buildPlan(meta: meta, languagePriority: languagePriority)
         if plan.attempts.isEmpty {
+            Logger.shared.info("processVideo · \(ref.videoId) no-subs (empty plan) in \(msSince(tStart))")
             return VideoProcessOutcome(
                 outcome: .noSubs(detail: "нет ни авто, ни ручных сабов в метаданных"),
                 resolvedFolderName: nil
             )
         }
+        Logger.shared.info("processVideo · \(ref.videoId) plan=\(plan.attempts.count) attempts")
 
         var failures: [String] = []
         let originalLang = meta.language ?? meta.originalLanguage
 
         for attempt in plan.attempts {
             let kindLabel = attempt.isAuto ? "auto" : "manual"
+            let tAttempt = Date()
             let tmpDir = FileManager.default.temporaryDirectory
                 .appendingPathComponent("ytkb-\(UUID().uuidString)", isDirectory: true)
             try? FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
@@ -414,7 +440,9 @@ actor PollOperation {
             } catch {
                 let msg = "\(kindLabel)-subs:\(attempt.langKey) — \(error)"
                 failures.append(msg)
+                Logger.shared.warn("processVideo · \(ref.videoId) subs FAIL (\(kindLabel) \(attempt.langKey)) in \(msSince(tAttempt)): \(error)")
                 if isBotCheck("\(error)") {
+                    Logger.shared.error("processVideo · \(ref.videoId) BOT-CHECK detected, aborting")
                     return VideoProcessOutcome(outcome: .error(message: "\(error)"), resolvedFolderName: nil)
                 }
                 continue
@@ -423,8 +451,10 @@ actor PollOperation {
             let segments = SubsDispatcher.parse(downloaded)
             if segments.isEmpty {
                 failures.append("\(kindLabel)-subs:\(attempt.langKey) — \(downloaded.ext) скачался, но 0 сегментов")
+                Logger.shared.warn("processVideo · \(ref.videoId) subs empty (\(kindLabel) \(attempt.langKey))")
                 continue
             }
+            Logger.shared.info("processVideo · \(ref.videoId) subs ok (\(kindLabel) \(attempt.langKey)) → \(segments.count) segments in \(msSince(tAttempt))")
 
             let isFallback = SubsPlanner.isFallback(attempt.langKey, original: originalLang)
             let transcript = Transcript(
@@ -457,11 +487,13 @@ actor PollOperation {
             // Return derived folder name only when channel had no prior pin —
             // consumer will persist it onto TrackedChannel.
             let folderPin = channel.folderName == nil ? derivedDir : nil
+            Logger.shared.info("processVideo ◀ \(ref.videoId) OK total \(msSince(tStart))")
             return VideoProcessOutcome(outcome: .ok(detail: detail), resolvedFolderName: folderPin)
         }
 
         let first = failures.first.map { String($0.prefix(140)) } ?? "никаких субтитров"
         let extra = failures.count > 1 ? " (+\(failures.count - 1) ещё)" : ""
+        Logger.shared.info("processVideo ◀ \(ref.videoId) no-subs total \(msSince(tStart))")
         return VideoProcessOutcome(outcome: .noSubs(detail: first + extra), resolvedFolderName: nil)
     }
 
