@@ -18,7 +18,10 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     public override init() { super.init() }
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
-        Logger.shared.info("yt-kb launching")
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
+        let sha = Bundle.main.infoDictionary?["GitCommitSHA"] as? String ?? "dev"
+        Logger.shared.info("yt-kb v\(version) (build \(build), commit \(sha)) launching")
         appState.bootstrap()
 
         menuBarController = MenuBarController(appState: appState, delegate: self)
