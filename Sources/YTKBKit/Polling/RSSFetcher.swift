@@ -79,12 +79,6 @@ package final class YTRSSParser: NSObject, XMLParserDelegate {
     private var buffer = ""
     private var parseError: Error?
 
-    private static let dateFormatter: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return f
-    }()
-
     /// Convenience entry point — instantiates a parser and runs it on `data`.
     /// Tests live in a separate module so we expose this as a static factory
     /// rather than relying on the inherited (public) NSObject init.
@@ -152,8 +146,12 @@ package final class YTRSSParser: NSObject, XMLParserDelegate {
     }
 
     private static func parseDate(_ raw: String) -> Date? {
-        if let d = dateFormatter.date(from: raw) { return d }
-        // Fallback without fractional seconds — YouTube does not include them.
+        // ISO8601DateFormatter is not Sendable, so we instantiate per call
+        // instead of caching it as a static let. Negligible cost — called once
+        // per <entry> in a 15-entry feed.
+        let withFractional = ISO8601DateFormatter()
+        withFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let d = withFractional.date(from: raw) { return d }
         let plain = ISO8601DateFormatter()
         return plain.date(from: raw)
     }
