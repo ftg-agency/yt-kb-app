@@ -1,28 +1,17 @@
 import SwiftUI
 
 /// Channel row used inside Settings → Каналы. Wider than the popover row,
-/// surfaces the per-channel poll interval as a Picker (rather than a context
-/// menu), and exposes enable/disable + remove inline.
+/// exposes enable/disable + remove inline. v2.0.0: per-channel poll interval
+/// removed — single global interval applies to all channels.
 struct SettingsChannelRow: View {
     let channel: TrackedChannel
-    let globalLabel: String
     let progress: ChannelProgress?
     let isPollingThis: Bool
     let folderName: String?
-    let onSetInterval: (Int?) -> Void
     let onToggleEnabled: () -> Void
     let onPollOnly: () -> Void
     let onRemove: () -> Void
     let onOpenFolder: () -> Void
-
-    private static let intervalOptions: [(label: String, value: Int?)] = [
-        ("По умолчанию", nil),
-        ("Каждый час", 3600),
-        ("Каждые 3 часа", 10800),
-        ("Каждые 6 часов", 21600),
-        ("Раз в день", 86400),
-        ("Только вручную", 0)
-    ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -39,9 +28,7 @@ struct SettingsChannelRow: View {
                         Text(channel.name)
                             .font(.body)
                             .foregroundStyle(channel.enabled ? .primary : .secondary)
-                        // Hide stale persisted X/Y while polling — progress
-                        // footer below shows fresh channel-wide counts.
-                        if !isPollingThis, let countLabel = videoCountLabel {
+                        if let countLabel = videoCountLabel {
                             Text(countLabel)
                                 .font(.caption.monospacedDigit())
                                 .foregroundStyle(.secondary)
@@ -61,18 +48,6 @@ struct SettingsChannelRow: View {
                 }
 
                 Spacer()
-
-                Picker(selection: intervalBinding) {
-                    ForEach(Self.intervalOptions, id: \.value) { opt in
-                        Text(opt.value == nil ? "По умолчанию (\(globalLabel))" : opt.label)
-                            .tag(opt.value)
-                    }
-                } label: {
-                    Text("Частота")
-                }
-                .pickerStyle(.menu)
-                .frame(width: 220)
-                .disabled(!channel.enabled)
 
                 Menu {
                     Button("Проверить только этот канал", action: onPollOnly)
@@ -103,10 +78,6 @@ struct SettingsChannelRow: View {
         }
         .padding(.horizontal, 4)
         .padding(.vertical, 8)
-    }
-
-    private var intervalBinding: Binding<Int?> {
-        Binding(get: { channel.pollIntervalSeconds }, set: { onSetInterval($0) })
     }
 
     @ViewBuilder
@@ -173,18 +144,21 @@ struct SettingsChannelRow: View {
         }
     }
 
-    /// Channel-wide "X / Y" when we know the channel total, else cycle-local.
+    /// Channel-wide "85% (X/Y)" when we know the channel total, else cycle-local.
     private func progressCountLabel(_ p: ChannelProgress) -> String? {
         guard p.total > 0 else { return nil }
         let done = p.alreadyIndexed + p.current
         if let reported = p.reportedChannelTotal, reported > 0 {
-            return "\(done) / \(reported)"
+            let pct = Int((Double(done) / Double(reported)) * 100)
+            return "\(pct)% (\(done)/\(reported))"
         }
         let totalGuess = p.alreadyIndexed + p.total
-        if p.alreadyIndexed > 0 {
-            return "\(done) / \(totalGuess)"
+        if p.alreadyIndexed > 0 && totalGuess > 0 {
+            let pct = Int((Double(done) / Double(totalGuess)) * 100)
+            return "\(pct)% (\(done)/\(totalGuess))"
         }
-        return "\(p.current)/\(p.total)"
+        let pct = Int((Double(p.current) / Double(p.total)) * 100)
+        return "\(pct)% (\(p.current)/\(p.total))"
     }
 
     /// Channel-wide fraction whenever we know the reported total.
@@ -223,7 +197,15 @@ struct SettingsChannelRow: View {
         return "проверен \(Int(interval / 86400)) д назад"
     }
 
+    /// Live counts during polling (from ChannelProgress); persisted otherwise.
     private var videoCountLabel: String? {
+        if isPollingThis, let p = progress {
+            let done = p.alreadyIndexed + p.current
+            if let reported = p.reportedChannelTotal, reported > 0 {
+                return "\(done) / \(reported)"
+            }
+            if p.alreadyIndexed > 0 { return "\(done)" }
+        }
         let indexed = channel.indexedCount
         let total = channel.videoCount ?? 0
         if total > 0 && indexed > 0 && indexed < total {

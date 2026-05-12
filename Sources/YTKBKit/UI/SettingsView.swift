@@ -138,16 +138,9 @@ struct SettingsView: View {
                 ForEach(appState.channelStore.channels) { channel in
                     SettingsChannelRow(
                         channel: channel,
-                        globalLabel: appState.settings.pollInterval.shortLabel,
                         progress: appState.channelProgress[channel.url],
                         isPollingThis: appState.pollingChannelURLs.contains(channel.url),
                         folderName: resolvedFolderName(for: channel),
-                        onSetInterval: { value in
-                            var updated = channel
-                            updated.pollIntervalSeconds = value
-                            appState.channelStore.updateChannel(updated)
-                            appState.restartScheduler()
-                        },
                         onToggleEnabled: {
                             var updated = channel
                             updated.enabled.toggle()

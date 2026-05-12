@@ -157,7 +157,6 @@ struct PopoverView: View {
                                     isPollingThis: appState.pollingChannelURLs.contains(channel.url),
                                     isFocused: appState.focusChannelURL == channel.url,
                                     progress: appState.channelProgress[channel.url],
-                                    globalIntervalLabel: appState.settings.pollInterval.shortLabel,
                                     onPollOnly: { Task { await PollingCoordinator.shared.pollOne(channel: channel, appState: appState) } },
                                     onToggleEnabled: {
                                         var updated = channel
@@ -165,13 +164,7 @@ struct PopoverView: View {
                                         appState.channelStore.updateChannel(updated)
                                     },
                                     onRemove: { appState.channelStore.removeChannel(url: channel.url) },
-                                    onOpenFolder: { openChannelFolder(channel: channel) },
-                                    onSetInterval: { value in
-                                        var updated = channel
-                                        updated.pollIntervalSeconds = value
-                                        appState.channelStore.updateChannel(updated)
-                                        appState.restartScheduler()
-                                    }
+                                    onOpenFolder: { openChannelFolder(channel: channel) }
                                 )
                                 .id(channel.url)
                             }

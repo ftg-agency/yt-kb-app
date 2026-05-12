@@ -5,14 +5,10 @@ struct ChannelRowView: View {
     let isPollingThis: Bool
     var isFocused: Bool = false
     var progress: ChannelProgress? = nil
-    /// Display label for the global default interval (e.g. "каждые 3 часа").
-    /// Used to render "По умолчанию (каждые 3 часа)" in the context menu.
-    var globalIntervalLabel: String = "по настройкам"
     let onPollOnly: () -> Void
     let onToggleEnabled: () -> Void
     let onRemove: () -> Void
     let onOpenFolder: () -> Void
-    let onSetInterval: (Int?) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -29,11 +25,6 @@ struct ChannelRowView: View {
                                 .font(.caption2)
                                 .foregroundStyle(.tertiary)
                         }
-                        if let perChannelLabel = perChannelOverrideLabel {
-                            Text(perChannelLabel)
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                        }
                     }
                     Text(subtitle)
                         .font(.caption2)
@@ -41,11 +32,7 @@ struct ChannelRowView: View {
                         .lineLimit(1)
                 }
                 Spacer()
-                // Hide the persisted X/Y badge while polling — the progress
-                // section below shows fresh channel-wide counts. Otherwise
-                // the badge displays stale videoCount from the last cycle
-                // alongside the live progress label, confusing the user.
-                if !isPollingThis, let countLabel = videoCountLabel {
+                if let countLabel = videoCountLabel {
                     Text(countLabel)
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
@@ -72,31 +59,8 @@ struct ChannelRowView: View {
             Button("Проверить только этот канал", action: onPollOnly)
                 .disabled(isPollingThis || !channel.enabled)
             Divider()
-            Menu("Частота проверки") {
-                intervalMenuItem(title: "По умолчанию (\(globalIntervalLabel))", value: nil)
-                Divider()
-                intervalMenuItem(title: "Каждый час", value: 3600)
-                intervalMenuItem(title: "Каждые 3 часа", value: 10800)
-                intervalMenuItem(title: "Каждые 6 часов", value: 21600)
-                intervalMenuItem(title: "Раз в день", value: 86400)
-                Divider()
-                intervalMenuItem(title: "Только вручную", value: 0)
-            }
             Button(channel.enabled ? "Отключить" : "Включить", action: onToggleEnabled)
             Button("Удалить", role: .destructive, action: onRemove)
-        }
-    }
-
-    @ViewBuilder
-    private func intervalMenuItem(title: String, value: Int?) -> some View {
-        Button {
-            onSetInterval(value)
-        } label: {
-            if channel.pollIntervalSeconds == value {
-                Label(title, systemImage: "checkmark")
-            } else {
-                Text(title)
-            }
         }
     }
 
@@ -126,21 +90,23 @@ struct ChannelRowView: View {
         }
     }
 
-    /// "X / Y" counter shown during polling. Channel-wide whenever possible:
-    /// `(alreadyIndexed + current) / reportedChannelTotal`. Falls back to
-    /// cycle-local `current / total` when channel total is unknown.
+    /// "85% (85/100)" counter shown during polling. Channel-wide whenever
+    /// possible. Falls back to cycle-local progress when channel total is
+    /// unknown (RSS path with empty alreadyIndexed).
     private func progressCountLabel(_ p: ChannelProgress) -> String? {
         guard p.total > 0 else { return nil }
         let done = p.alreadyIndexed + p.current
         if let reported = p.reportedChannelTotal, reported > 0 {
-            return "\(done) / \(reported)"
+            let pct = Int((Double(done) / Double(reported)) * 100)
+            return "\(pct)% (\(done)/\(reported))"
         }
-        // Channel total unknown (e.g. RSS path). Show "done out of best guess".
         let totalGuess = p.alreadyIndexed + p.total
-        if p.alreadyIndexed > 0 {
-            return "\(done) / \(totalGuess)"
+        if p.alreadyIndexed > 0 && totalGuess > 0 {
+            let pct = Int((Double(done) / Double(totalGuess)) * 100)
+            return "\(pct)% (\(done)/\(totalGuess))"
         }
-        return "\(p.current)/\(p.total)"
+        let pct = Int((Double(p.current) / Double(p.total)) * 100)
+        return "\(pct)% (\(p.current)/\(p.total))"
     }
 
     /// When YouTube reports more videos than we could enumerate AND we have
@@ -218,10 +184,17 @@ struct ChannelRowView: View {
         return "ещё не проверялся"
     }
 
-    /// Badge text. When YouTube reports a total but we have fewer indexed —
-    /// show "X / Y". When totals match (or only one is known) — show the
-    /// single number. Falls back to nothing if both are zero.
+    /// Badge text. While polling — uses live ChannelProgress numbers
+    /// (alreadyIndexed + current vs reportedChannelTotal) so the badge stays
+    /// accurate during the cycle. Otherwise — persisted indexedCount/videoCount.
     private var videoCountLabel: String? {
+        if isPollingThis, let p = progress {
+            let done = p.alreadyIndexed + p.current
+            if let reported = p.reportedChannelTotal, reported > 0 {
+                return "\(done) / \(reported)"
+            }
+            if p.alreadyIndexed > 0 { return "\(done)" }
+        }
         let indexed = channel.indexedCount
         let total = channel.videoCount ?? 0
         if total > 0 && indexed > 0 && indexed < total {
@@ -250,16 +223,4 @@ struct ChannelRowView: View {
         return "\(Int(interval / 86400)) д назад"
     }
 
-    /// Label suffix shown when the channel has a non-default poll interval.
-    private var perChannelOverrideLabel: String? {
-        guard let v = channel.pollIntervalSeconds else { return nil }
-        if v == 0 { return "(только вручную)" }
-        switch v {
-        case 3600:  return "(ежечасно)"
-        case 10800: return "(каждые 3ч)"
-        case 21600: return "(каждые 6ч)"
-        case 86400: return "(раз в день)"
-        default:    return "(\(v / 60) мин)"
-        }
-    }
 }

@@ -12,12 +12,6 @@ package struct TrackedChannel: Codable, Identifiable, Equatable, Sendable {
     package var lastPollError: String?
     package var enabled: Bool = true
 
-    /// Per-channel poll interval. Semantics:
-    /// - nil   → use global Settings.pollInterval
-    /// - 0     → manual only (scheduler skips this channel)
-    /// - > 0   → poll every N seconds
-    package var pollIntervalSeconds: Int? = nil
-
     /// YouTube's reported total video count, captured at the most recent
     /// successful resolve. nil before first poll. Surfaced in the widget so
     /// user always sees "X videos on YouTube" without having to start a poll.
@@ -52,7 +46,6 @@ package struct TrackedChannel: Codable, Identifiable, Equatable, Sendable {
         lastPollStatus: String? = nil,
         lastPollError: String? = nil,
         enabled: Bool = true,
-        pollIntervalSeconds: Int? = nil,
         videoCount: Int? = nil,
         folderName: String? = nil,
         lastPollDownloaded: Int = 0,
@@ -68,7 +61,6 @@ package struct TrackedChannel: Codable, Identifiable, Equatable, Sendable {
         self.lastPollStatus = lastPollStatus
         self.lastPollError = lastPollError
         self.enabled = enabled
-        self.pollIntervalSeconds = pollIntervalSeconds
         self.videoCount = videoCount
         self.folderName = folderName
         self.lastPollDownloaded = lastPollDownloaded
@@ -77,9 +69,10 @@ package struct TrackedChannel: Codable, Identifiable, Equatable, Sendable {
         self.lastFullReconcileAt = lastFullReconcileAt
     }
 
-    /// Custom decoder so older state.json files (without the new
-    /// lastPoll{Downloaded,Skipped} / indexedCount fields) decode cleanly with
-    /// sensible defaults instead of throwing keyNotFound.
+    /// Custom decoder so older state.json files (without newer fields) decode
+    /// cleanly with sensible defaults instead of throwing keyNotFound. Old
+    /// `pollIntervalSeconds` field is silently ignored — JSONDecoder doesn't
+    /// fail on extra unknown keys.
     package init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         url = try c.decode(String.self, forKey: .url)
@@ -90,7 +83,6 @@ package struct TrackedChannel: Codable, Identifiable, Equatable, Sendable {
         lastPollStatus = try c.decodeIfPresent(String.self, forKey: .lastPollStatus)
         lastPollError = try c.decodeIfPresent(String.self, forKey: .lastPollError)
         enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
-        pollIntervalSeconds = try c.decodeIfPresent(Int.self, forKey: .pollIntervalSeconds)
         videoCount = try c.decodeIfPresent(Int.self, forKey: .videoCount)
         folderName = try c.decodeIfPresent(String.self, forKey: .folderName)
         lastPollDownloaded = try c.decodeIfPresent(Int.self, forKey: .lastPollDownloaded) ?? 0
@@ -99,18 +91,12 @@ package struct TrackedChannel: Codable, Identifiable, Equatable, Sendable {
         lastFullReconcileAt = try c.decodeIfPresent(Date.self, forKey: .lastFullReconcileAt)
     }
 
-    /// Returns the effective interval in seconds (or nil if "manual only").
-    package func effectivePollInterval(globalSeconds: TimeInterval) -> TimeInterval? {
-        guard let v = pollIntervalSeconds else { return globalSeconds }
-        return v == 0 ? nil : TimeInterval(v)
-    }
-
     /// True if this channel is due for a scheduled poll right now.
-    /// "Manual only" channels return false. Never-polled channels return true.
+    /// Never-polled channels return true. Per-channel override removed in
+    /// v2.0.0 — all channels use the single global interval from Settings.
     package func isDueForScheduledPoll(now: Date = Date(), globalSeconds: TimeInterval) -> Bool {
-        guard let interval = effectivePollInterval(globalSeconds: globalSeconds) else { return false }
         guard let last = lastPolledAt else { return true }
-        return now.timeIntervalSince(last) >= interval
+        return now.timeIntervalSince(last) >= globalSeconds
     }
 }
 
