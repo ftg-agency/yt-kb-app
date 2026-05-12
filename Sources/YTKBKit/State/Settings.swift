@@ -3,17 +3,11 @@ import Combine
 
 final class Settings: ObservableObject {
     enum BrowserChoice: String, CaseIterable, Identifiable {
-        case chrome, safari, firefox, brave, edge, opera, vivaldi, none
+        case chrome, none
         var id: String { rawValue }
         var displayName: String {
             switch self {
             case .chrome: return "Chrome"
-            case .safari: return "Safari"
-            case .firefox: return "Firefox"
-            case .brave: return "Brave"
-            case .edge: return "Edge"
-            case .opera: return "Opera"
-            case .vivaldi: return "Vivaldi"
             case .none: return "Без cookies"
             }
         }
