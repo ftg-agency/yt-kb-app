@@ -19,14 +19,21 @@ package struct ChannelProgress: Equatable, Sendable {
     /// larger than `total`, yt-dlp couldn't enumerate the full channel and
     /// the UI shows "X of total (channel has reportedTotal)".
     package var reportedChannelTotal: Int? = nil
+    /// Number of videos for this channel already on disk at the start of
+    /// this cycle. Used by the UI to display channel-wide progress
+    /// (`alreadyIndexed + current` out of `reportedChannelTotal`) instead of
+    /// cycle-local progress (which resets to 0 every poll and confuses
+    /// users on channels that were partially indexed in a previous install).
+    package var alreadyIndexed: Int = 0
 
-    package init(phase: Phase, current: Int, total: Int, label: String? = nil, isInitialIndexing: Bool = false, reportedChannelTotal: Int? = nil) {
+    package init(phase: Phase, current: Int, total: Int, label: String? = nil, isInitialIndexing: Bool = false, reportedChannelTotal: Int? = nil, alreadyIndexed: Int = 0) {
         self.phase = phase
         self.current = current
         self.total = total
         self.label = label
         self.isInitialIndexing = isInitialIndexing
         self.reportedChannelTotal = reportedChannelTotal
+        self.alreadyIndexed = alreadyIndexed
     }
 
     package var fraction: Double {

@@ -104,8 +104,8 @@ struct ChannelRowView: View {
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
                 Spacer()
-                if p.total > 0 {
-                    Text("\(p.current)/\(p.total)")
+                if let label = progressCountLabel(p) {
+                    Text(label)
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
@@ -122,12 +122,30 @@ struct ChannelRowView: View {
         }
     }
 
-    /// When YouTube reports more videos than we could enumerate, surface the
-    /// gap quietly so the user understands the next cycle will pick up more.
+    /// "X / Y" counter shown during polling. Channel-wide whenever possible:
+    /// `(alreadyIndexed + current) / reportedChannelTotal`. Falls back to
+    /// cycle-local `current / total` when channel total is unknown.
+    private func progressCountLabel(_ p: ChannelProgress) -> String? {
+        guard p.total > 0 else { return nil }
+        let done = p.alreadyIndexed + p.current
+        if let reported = p.reportedChannelTotal, reported > 0 {
+            return "\(done) / \(reported)"
+        }
+        // Channel total unknown (e.g. RSS path). Show "done out of best guess".
+        let totalGuess = p.alreadyIndexed + p.total
+        if p.alreadyIndexed > 0 {
+            return "\(done) / \(totalGuess)"
+        }
+        return "\(p.current)/\(p.total)"
+    }
+
+    /// When YouTube reports more videos than we could enumerate AND we have
+    /// nothing on disk to make up the gap, surface the difference quietly.
     private func channelTotalMismatch(_ p: ChannelProgress) -> String? {
         guard let reported = p.reportedChannelTotal, reported > 0 else { return nil }
-        guard p.total > 0 && reported > p.total + 5 else { return nil }
-        return "\(p.total) из \(reported) — остальное подтянется"
+        let projectedDone = p.alreadyIndexed + p.total
+        guard p.total > 0 && reported > projectedDone + 5 else { return nil }
+        return "\(projectedDone) из \(reported) — остальное подтянется"
     }
 
     private func progressPhaseLabel(_ p: ChannelProgress) -> String {
@@ -139,12 +157,19 @@ struct ChannelRowView: View {
         }
     }
 
-    /// Indeterminate display for resolving/scanning where total is unknown:
-    /// SwiftUI's ProgressView with value=nil shows the indeterminate animation.
+    /// Indeterminate display for resolving/scanning where total is unknown.
+    /// During processing — channel-wide fraction when we know the channel's
+    /// reported total (so the bar reflects "X out of full channel" instead of
+    /// always 0→100% per cycle). Falls back to cycle-local fraction otherwise.
     private func progressFraction(_ p: ChannelProgress) -> Double? {
         switch p.phase {
         case .resolving, .scanning: return nil
-        case .processing, .retrying: return p.fraction
+        case .processing, .retrying:
+            if let reported = p.reportedChannelTotal, reported > 0 {
+                let done = p.alreadyIndexed + p.current
+                return min(1.0, Double(done) / Double(reported))
+            }
+            return p.fraction
         }
     }
 

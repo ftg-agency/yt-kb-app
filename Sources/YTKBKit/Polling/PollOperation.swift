@@ -177,6 +177,21 @@ actor PollOperation {
         let pathLabel = didFullEnum ? "full" : "rss"
         Logger.shared.info("[\(channel.name)] source=\(pathLabel) found=\(videos.count) new=\(toProcess.count) retries=\(priorRetries.count)\(reportedSummary)")
 
+        // Channel-wide baseline: how many of this channel's videos are
+        // already on disk before this cycle starts. Used by UI to show
+        // "(alreadyIndexed + current) / reportedChannelTotal" instead of
+        // cycle-local current/total (which resets to 0 each poll).
+        // Preference order:
+        //   1. countIndexedVideos in pinned folder — most accurate
+        //   2. videos ∩ existing — fallback when folderName not pinned
+        let alreadyIndexed: Int
+        if let folder = channel.folderName, !folder.isEmpty {
+            alreadyIndexed = KBScanner.countIndexedVideos(in: kbRoot.appendingPathComponent(folder))
+        } else {
+            alreadyIndexed = videos.filter { existing[$0.videoId] != nil }.count
+        }
+        Logger.shared.info("pollChannel · [\(channel.name)] alreadyIndexed=\(alreadyIndexed)")
+
         let eligible = RetryProcessor.eligibleEntries(priorRetries)
         let totalSteps = toProcess.count + eligible.count
         let counter = ProgressCounter()
@@ -190,6 +205,7 @@ actor PollOperation {
                 totalSteps: totalSteps,
                 isInitial: isInitial,
                 reportedTotal: reportedTotal,
+                alreadyIndexed: alreadyIndexed,
                 kbRoot: kbRoot,
                 channel: channel,
                 cancellation: cancellation,
@@ -211,6 +227,7 @@ actor PollOperation {
                 totalSteps: totalSteps,
                 isInitial: false,
                 reportedTotal: reportedTotal,
+                alreadyIndexed: alreadyIndexed,
                 kbRoot: kbRoot,
                 channel: channel,
                 cancellation: cancellation,
@@ -238,6 +255,7 @@ actor PollOperation {
         totalSteps: Int,
         isInitial: Bool,
         reportedTotal: Int?,
+        alreadyIndexed: Int,
         kbRoot: URL,
         channel: TrackedChannel,
         cancellation: CancellationFlag,
@@ -284,7 +302,8 @@ actor PollOperation {
                     total: totalSteps,
                     label: label,
                     isInitialIndexing: isInitial,
-                    reportedChannelTotal: reportedTotal
+                    reportedChannelTotal: reportedTotal,
+                    alreadyIndexed: alreadyIndexed
                 ))
 
                 applyOutcome(

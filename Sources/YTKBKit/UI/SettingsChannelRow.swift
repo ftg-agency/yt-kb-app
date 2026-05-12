@@ -133,8 +133,8 @@ struct SettingsChannelRow: View {
                 Text(phaseLabel(p))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                if p.total > 0 {
-                    Text("\(p.current)/\(p.total)")
+                if let label = progressCountLabel(p) {
+                    Text(label)
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
@@ -153,8 +153,8 @@ struct SettingsChannelRow: View {
             ProgressView(value: progressFraction(p))
                 .progressViewStyle(.linear)
                 .tint(progressTint(p))
-            if let reported = p.reportedChannelTotal, reported > 0, p.total > 0, reported > p.total + 5 {
-                Text("\(p.total) из \(reported) — остальное подтянется на следующих проверках.")
+            if let mismatch = channelTotalMismatch(p) {
+                Text(mismatch)
                     .font(.caption2)
                     .foregroundStyle(.orange)
                     .lineLimit(2)
@@ -171,11 +171,40 @@ struct SettingsChannelRow: View {
         }
     }
 
+    /// Channel-wide "X / Y" when we know the channel total, else cycle-local.
+    private func progressCountLabel(_ p: ChannelProgress) -> String? {
+        guard p.total > 0 else { return nil }
+        let done = p.alreadyIndexed + p.current
+        if let reported = p.reportedChannelTotal, reported > 0 {
+            return "\(done) / \(reported)"
+        }
+        let totalGuess = p.alreadyIndexed + p.total
+        if p.alreadyIndexed > 0 {
+            return "\(done) / \(totalGuess)"
+        }
+        return "\(p.current)/\(p.total)"
+    }
+
+    /// Channel-wide fraction whenever we know the reported total.
     private func progressFraction(_ p: ChannelProgress) -> Double? {
         switch p.phase {
         case .resolving, .scanning: return nil
-        case .processing, .retrying: return p.fraction
+        case .processing, .retrying:
+            if let reported = p.reportedChannelTotal, reported > 0 {
+                let done = p.alreadyIndexed + p.current
+                return min(1.0, Double(done) / Double(reported))
+            }
+            return p.fraction
         }
+    }
+
+    /// Surface the gap when we project we'll finish below YouTube's reported
+    /// total — explains "the rest will pull in on later cycles".
+    private func channelTotalMismatch(_ p: ChannelProgress) -> String? {
+        guard let reported = p.reportedChannelTotal, reported > 0 else { return nil }
+        let projectedDone = p.alreadyIndexed + p.total
+        guard p.total > 0 && reported > projectedDone + 5 else { return nil }
+        return "\(projectedDone) из \(reported) — остальное подтянется на следующих проверках."
     }
 
     private func progressTint(_ p: ChannelProgress) -> Color {
