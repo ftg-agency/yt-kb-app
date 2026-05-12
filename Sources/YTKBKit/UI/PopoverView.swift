@@ -415,6 +415,12 @@ struct PopoverView: View {
                     addResolvedChannelId = lite.channelId
                 }
                 return
+            } catch ChannelPageFetcher.FetchError.http(let code) where code == 404 {
+                // Definitive — channel doesn't exist. Skip yt-dlp fallback
+                // (it would just retry 404 for ~2 minutes via cascade).
+                Logger.shared.warn("addChannel · channel не существует (HTTP 404)")
+                await MainActor.run { self.addError = "Канал не существует" }
+                return
             } catch {
                 Logger.shared.warn("addChannel · channelPage FAIL (\(error)) — fallback to yt-dlp quickResolve")
             }

@@ -134,9 +134,10 @@ package actor ChannelResolver {
         "\(Int(Date().timeIntervalSince(since) * 1000))ms"
     }
 
-    /// Detects yt-dlp's "channel does not have a {shorts,streams,live} tab"
-    /// stderr message. Deterministic — same answer regardless of player_client,
-    /// so detecting it lets fetchEntries skip the rest of the cascade.
+    /// Detects deterministic yt-dlp errors that won't be fixed by trying a
+    /// different player_client. Tab-missing / 404 / auth-required all return
+    /// the same answer regardless of cascade — detecting them lets fetchEntries
+    /// abort the loop instead of burning ~30s × 5 clients × 3 tabs.
     private static func isMissingTabError(_ stderr: String) -> Bool {
         let lower = stderr.lowercased()
         return lower.contains("does not have a shorts tab")
@@ -144,6 +145,9 @@ package actor ChannelResolver {
             || lower.contains("does not have a live tab")
             || lower.contains("does not have a videos tab")
             || (lower.contains("this channel does not have") && lower.contains("tab"))
+            || lower.contains("http error 404")
+            || lower.contains("require authentication")
+            || (lower.contains("not found") && lower.contains("youtube:tab"))
     }
 
     func listVideos(channelURL: String) async throws -> [VideoRef] {

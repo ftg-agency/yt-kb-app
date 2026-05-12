@@ -67,6 +67,10 @@ actor YTDLPRunner {
         if lower.contains("sign in to confirm") || lower.contains("not a bot") { return false }
         // Format-error is handled by cascade — don't retry at this level
         if lower.contains("requested format is not available") { return false }
+        // 404 / channel not found / auth-required are deterministic — never retry
+        if lower.contains("http error 404") { return false }
+        if lower.contains("not found") && lower.contains("youtube:tab") { return false }
+        if lower.contains("require authentication") { return false }
         return Self.networkErrorMarkers.contains(where: { lower.contains($0) })
     }
 
