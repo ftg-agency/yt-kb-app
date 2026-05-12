@@ -167,15 +167,13 @@ actor YTDLPRunner {
         }.value
     }
 
-    /// Build base args: `yt-dlp` global flags (cookies, sleep) prepended, then user args.
+    /// Build base args: `yt-dlp` global flags (cookies only — sleep-requests
+    /// removed in v2.0.0) prepended, then user args.
     @MainActor
     static func baseArgs(settings: Settings) -> [String] {
         var args: [String] = []
         if let key = settings.browser.ytDlpKey {
             args.append(contentsOf: ["--cookies-from-browser", key])
-        }
-        if settings.sleepRequests > 0 {
-            args.append(contentsOf: ["--sleep-requests", String(settings.sleepRequests)])
         }
         return args
     }

@@ -50,7 +50,6 @@ final class Settings: ObservableObject {
     private struct Keys {
         static let kbBookmark = "kbBookmark"
         static let browser = "browser"
-        static let sleepRequests = "sleepRequests"
         static let onboardingCompleted = "onboardingCompleted"
         static let pollInterval = "pollInterval"
         static let backgroundPollingEnabled = "backgroundPollingEnabled"
@@ -69,7 +68,6 @@ final class Settings: ObservableObject {
 
     @Published var kbDirectory: URL?
     @Published var browser: BrowserChoice = .chrome
-    @Published var sleepRequests: Double = 1.0
     @Published var onboardingCompleted: Bool = false
     @Published var pollInterval: PollInterval = .every3h
     @Published var backgroundPollingEnabled: Bool = true
@@ -104,7 +102,6 @@ final class Settings: ObservableObject {
            let choice = BrowserChoice(rawValue: raw) {
             browser = choice
         }
-        sleepRequests = defaults.object(forKey: Keys.sleepRequests) as? Double ?? 1.0
         onboardingCompleted = defaults.bool(forKey: Keys.onboardingCompleted)
         if let raw = defaults.object(forKey: Keys.pollInterval) as? Int,
            let pi = PollInterval(rawValue: raw) {
@@ -173,11 +170,6 @@ final class Settings: ObservableObject {
     func setBrowser(_ choice: BrowserChoice) {
         browser = choice
         defaults.set(choice.rawValue, forKey: Keys.browser)
-    }
-
-    func setSleepRequests(_ value: Double) {
-        sleepRequests = value
-        defaults.set(value, forKey: Keys.sleepRequests)
     }
 
     func markOnboardingComplete() {
