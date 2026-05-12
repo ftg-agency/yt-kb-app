@@ -41,7 +41,11 @@ struct ChannelRowView: View {
                         .lineLimit(1)
                 }
                 Spacer()
-                if let countLabel = videoCountLabel {
+                // Hide the persisted X/Y badge while polling — the progress
+                // section below shows fresh channel-wide counts. Otherwise
+                // the badge displays stale videoCount from the last cycle
+                // alongside the live progress label, confusing the user.
+                if !isPollingThis, let countLabel = videoCountLabel {
                     Text(countLabel)
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)

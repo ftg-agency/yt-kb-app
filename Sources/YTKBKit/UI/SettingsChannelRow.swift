@@ -39,7 +39,9 @@ struct SettingsChannelRow: View {
                         Text(channel.name)
                             .font(.body)
                             .foregroundStyle(channel.enabled ? .primary : .secondary)
-                        if let countLabel = videoCountLabel {
+                        // Hide stale persisted X/Y while polling — progress
+                        // footer below shows fresh channel-wide counts.
+                        if !isPollingThis, let countLabel = videoCountLabel {
                             Text(countLabel)
                                 .font(.caption.monospacedDigit())
                                 .foregroundStyle(.secondary)
