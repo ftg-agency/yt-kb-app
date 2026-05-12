@@ -77,7 +77,9 @@ actor YTDLPRunner {
     /// Run yt-dlp with the given args; returns stdout/stderr and exit code.
     /// Never throws on non-zero exit — caller decides how to interpret stderr.
     /// Transient network failures (DNS, connection reset, timeout) are retried
-    /// up to 3 times with exponential backoff (1s, 2s, 4s).
+    /// up to 3 times with short backoff (1s, 2s, 4s). HTTP 429 (rate-limit)
+    /// also retries but with much longer backoff (15s, 30s, 60s) — YouTube
+    /// throttles per-IP and needs real cooldown.
     func run(_ args: [String], timeout: TimeInterval = 300) async throws -> YTDLPResult {
         var attempt = 0
         let maxAttempts = 3
@@ -93,6 +95,14 @@ actor YTDLPRunner {
                 return result
             }
             Logger.shared.warn("yt-dlp ◀ exit=\(result.exitCode) in \(ms)ms · stderr=\(result.stderr.lastNonEmptyLine.prefix(160))")
+            if attempt < maxAttempts, Self.isRateLimit(result.stderr) {
+                // 15, 30, 60s. YouTube's per-IP rate-limit window is typically
+                // minutes; 4s backoff isn't enough.
+                let delaySeconds: UInt64 = [15, 30, 60][attempt - 1]
+                Logger.shared.warn("yt-dlp 429 rate-limit retry (attempt \(attempt)/\(maxAttempts)) backoff=\(delaySeconds)s")
+                try? await Task.sleep(nanoseconds: delaySeconds * 1_000_000_000)
+                continue
+            }
             if attempt < maxAttempts, Self.isTransientNetworkError(result.stderr) {
                 let delaySeconds = UInt64(pow(2.0, Double(attempt - 1)))  // 1, 2, 4
                 Logger.shared.warn("yt-dlp transient retry (attempt \(attempt)/\(maxAttempts)) backoff=\(delaySeconds)s")
@@ -101,6 +111,11 @@ actor YTDLPRunner {
             }
             return result
         }
+    }
+
+    private static func isRateLimit(_ stderr: String) -> Bool {
+        let lower = stderr.lowercased()
+        return lower.contains("http error 429") || lower.contains("too many requests")
     }
 
     /// Single-line preview of args for logs. Truncates the URL so the line

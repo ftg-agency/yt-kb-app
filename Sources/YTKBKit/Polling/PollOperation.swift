@@ -165,14 +165,17 @@ actor PollOperation {
                 }
             }
         }
+        let resolveMs = Int(Date().timeIntervalSince(tResolve) * 1000)
         report.didFullReconcile = didFullEnum
 
         if cancellation.isCancelled { report.cancelled = true; return report }
 
         progress(ChannelProgress(phase: .scanning, current: 0, total: 0, label: nil, isInitialIndexing: isInitial, reportedChannelTotal: reportedTotal))
+        let tScan = Date()
         let existing = KBScanner.scanExistingIds(in: kbRoot)
         let retryIds = Set(priorRetries.map(\.videoId))
         let toProcess = videos.filter { existing[$0.videoId] == nil && !retryIds.contains($0.videoId) }
+        let scanMs = Int(Date().timeIntervalSince(tScan) * 1000)
         let reportedSummary = reportedTotal.map { " channelTotal=\($0)" } ?? ""
         let pathLabel = didFullEnum ? "full" : "rss"
         Logger.shared.info("[\(channel.name)] source=\(pathLabel) found=\(videos.count) new=\(toProcess.count) retries=\(priorRetries.count)\(reportedSummary)")
@@ -190,12 +193,13 @@ actor PollOperation {
         } else {
             alreadyIndexed = videos.filter { existing[$0.videoId] != nil }.count
         }
-        Logger.shared.info("pollChannel · [\(channel.name)] alreadyIndexed=\(alreadyIndexed)")
+        Logger.shared.info("pollChannel · [\(channel.name)] alreadyIndexed=\(alreadyIndexed) scan=\(scanMs)ms")
 
         let eligible = RetryProcessor.eligibleEntries(priorRetries)
         let totalSteps = toProcess.count + eligible.count
         let counter = ProgressCounter()
         Logger.shared.info("pollChannel · [\(channel.name)] toProcess=\(toProcess.count) eligibleRetries=\(eligible.count) maxParallel=\(maxConcurrentVideos)")
+        let tProcessing = Date()
 
         // === New videos in parallel ===
         if !toProcess.isEmpty {
@@ -238,7 +242,15 @@ actor PollOperation {
             )
         }
 
-        Logger.shared.info("pollChannel ◀ [\(channel.name)] DONE in \(msSince(tStart)) · ok=\(report.counts["ok"] ?? 0) skipped=\(report.counts["skipped"] ?? 0) noSubs=\(report.counts["no_subs"] ?? 0) error=\(report.counts["error"] ?? 0) botCheck=\(report.botCheckHit)")
+        let processingMs = Int(Date().timeIntervalSince(tProcessing) * 1000)
+        let totalMs = Int(Date().timeIntervalSince(tStart) * 1000)
+        let processedCount = totalSteps
+        let perVideoAvg = processedCount > 0 ? processingMs / processedCount : 0
+        let ok = report.counts["ok"] ?? 0
+        let skipped = report.counts["skipped"] ?? 0
+        let noSubs = report.counts["no_subs"] ?? 0
+        let errCount = report.counts["error"] ?? 0
+        Logger.shared.info("pollChannel ◀ [\(channel.name)] DONE total=\(totalMs)ms · resolve=\(resolveMs)ms scan=\(scanMs)ms processing=\(processingMs)ms · ok=\(ok) skipped=\(skipped) noSubs=\(noSubs) error=\(errCount) botCheck=\(report.botCheckHit) · per-video avg=\(perVideoAvg)ms (n=\(processedCount))")
         return report
     }
 
@@ -417,6 +429,7 @@ actor PollOperation {
             Logger.shared.warn("processVideo · \(ref.videoId) meta FAIL in \(msSince(tMeta)): \(error)")
             return VideoProcessOutcome(outcome: .error(message: "метаданные: \(error)"), resolvedFolderName: nil)
         }
+        let metaMs = Int(Date().timeIntervalSince(tMeta) * 1000)
 
         let derivedDir = FileNaming.channelDirName(meta: meta)
         let dirName = channel.folderName ?? derivedDir
@@ -424,12 +437,13 @@ actor PollOperation {
         let videoFileName = FileNaming.videoFileName(meta: meta)
         let videoPath = channelDir.appendingPathComponent(videoFileName)
         if FileManager.default.fileExists(atPath: videoPath.path) {
+            Logger.shared.info("processVideo ◀ \(ref.videoId) SKIP (already on disk) total=\(msSince(tStart)) meta=\(metaMs)ms")
             return VideoProcessOutcome(outcome: .skipped, resolvedFolderName: nil)
         }
 
         let plan = SubsPlanner.buildPlan(meta: meta, languagePriority: languagePriority)
         if plan.attempts.isEmpty {
-            Logger.shared.info("processVideo · \(ref.videoId) no-subs (empty plan) in \(msSince(tStart))")
+            Logger.shared.info("processVideo ◀ \(ref.videoId) no-subs (empty plan) total=\(msSince(tStart)) meta=\(metaMs)ms")
             return VideoProcessOutcome(
                 outcome: .noSubs(detail: "нет ни авто, ни ручных сабов в метаданных"),
                 resolvedFolderName: nil
@@ -438,6 +452,7 @@ actor PollOperation {
         Logger.shared.info("processVideo · \(ref.videoId) plan=\(plan.attempts.count) attempts")
 
         var failures: [String] = []
+        var attemptSummaries: [String] = []
         let originalLang = meta.language ?? meta.originalLanguage
 
         for attempt in plan.attempts {
@@ -449,6 +464,7 @@ actor PollOperation {
             defer { try? FileManager.default.removeItem(at: tmpDir) }
 
             let downloaded: DownloadedSubFile
+            let tDownload = Date()
             do {
                 downloaded = try await subs.download(
                     url: videoURL,
@@ -457,22 +473,32 @@ actor PollOperation {
                     into: tmpDir
                 )
             } catch {
+                let downloadMs = Int(Date().timeIntervalSince(tDownload) * 1000)
                 let msg = "\(kindLabel)-subs:\(attempt.langKey) — \(error)"
                 failures.append(msg)
-                Logger.shared.warn("processVideo · \(ref.videoId) subs FAIL (\(kindLabel) \(attempt.langKey)) in \(msSince(tAttempt)): \(error)")
+                attemptSummaries.append("\(attempt.langKey):FAIL@\(downloadMs)ms")
+                Logger.shared.warn("processVideo · \(ref.videoId) subs FAIL (\(kindLabel) \(attempt.langKey)) in \(downloadMs)ms: \(error)")
                 if isBotCheck("\(error)") {
                     Logger.shared.error("processVideo · \(ref.videoId) BOT-CHECK detected, aborting")
                     return VideoProcessOutcome(outcome: .error(message: "\(error)"), resolvedFolderName: nil)
                 }
+                if is429("\(error)") {
+                    Logger.shared.warn("processVideo · \(ref.videoId) HTTP 429 — YouTube rate-limited")
+                }
                 continue
             }
+            let downloadMs = Int(Date().timeIntervalSince(tDownload) * 1000)
 
+            let tParse = Date()
             let segments = SubsDispatcher.parse(downloaded)
+            let parseMs = Int(Date().timeIntervalSince(tParse) * 1000)
             if segments.isEmpty {
                 failures.append("\(kindLabel)-subs:\(attempt.langKey) — \(downloaded.ext) скачался, но 0 сегментов")
+                attemptSummaries.append("\(attempt.langKey):dl=\(downloadMs)ms,parse=\(parseMs)ms,seg=0")
                 Logger.shared.warn("processVideo · \(ref.videoId) subs empty (\(kindLabel) \(attempt.langKey))")
                 continue
             }
+            attemptSummaries.append("\(attempt.langKey):dl=\(downloadMs)ms,parse=\(parseMs)ms,seg=\(segments.count)")
             Logger.shared.info("processVideo · \(ref.videoId) subs ok (\(kindLabel) \(attempt.langKey)) → \(segments.count) segments in \(msSince(tAttempt))")
 
             let isFallback = SubsPlanner.isFallback(attempt.langKey, original: originalLang)
@@ -483,21 +509,30 @@ actor PollOperation {
                 isFallback: isFallback
             )
 
+            let tRender = Date()
+            let tWrite: Date
+            let renderMs: Int
+            let writeMs: Int
             do {
                 try FileManager.default.createDirectory(at: channelDir, withIntermediateDirectories: true)
                 let body = MarkdownRenderer.render(meta: meta, transcript: transcript)
+                renderMs = Int(Date().timeIntervalSince(tRender) * 1000)
+                tWrite = Date()
                 let tmp = videoPath.appendingPathExtension("tmp")
                 try body.write(to: tmp, atomically: true, encoding: .utf8)
                 _ = try FileManager.default.replaceItemAt(videoPath, withItemAt: tmp)
+                writeMs = Int(Date().timeIntervalSince(tWrite) * 1000)
             } catch {
                 return VideoProcessOutcome(outcome: .error(message: "запись файла: \(error)"), resolvedFolderName: nil)
             }
 
+            let tIndex = Date()
             ChannelIndexBuilder.rebuild(
                 channelDir: channelDir,
                 channelName: meta.displayChannel,
                 channelURL: meta.displayChannelURL
             )
+            let indexMs = Int(Date().timeIntervalSince(tIndex) * 1000)
 
             var detail = "\(transcript.source):\(attempt.langKey) (\(segments.count) сегм.)"
             if isFallback {
@@ -506,18 +541,25 @@ actor PollOperation {
             // Return derived folder name only when channel had no prior pin —
             // consumer will persist it onto TrackedChannel.
             let folderPin = channel.folderName == nil ? derivedDir : nil
-            Logger.shared.info("processVideo ◀ \(ref.videoId) OK total \(msSince(tStart))")
+            let totalMs = Int(Date().timeIntervalSince(tStart) * 1000)
+            Logger.shared.info("processVideo ◀ \(ref.videoId) OK total=\(totalMs)ms · meta=\(metaMs)ms render=\(renderMs)ms write=\(writeMs)ms index=\(indexMs)ms · attempts=[\(attemptSummaries.joined(separator: ";"))]")
             return VideoProcessOutcome(outcome: .ok(detail: detail), resolvedFolderName: folderPin)
         }
 
         let first = failures.first.map { String($0.prefix(140)) } ?? "никаких субтитров"
         let extra = failures.count > 1 ? " (+\(failures.count - 1) ещё)" : ""
-        Logger.shared.info("processVideo ◀ \(ref.videoId) no-subs total \(msSince(tStart))")
+        let totalMs = Int(Date().timeIntervalSince(tStart) * 1000)
+        Logger.shared.info("processVideo ◀ \(ref.videoId) no-subs total=\(totalMs)ms · meta=\(metaMs)ms · attempts=[\(attemptSummaries.joined(separator: ";"))]")
         return VideoProcessOutcome(outcome: .noSubs(detail: first + extra), resolvedFolderName: nil)
     }
 
     private nonisolated func isBotCheck(_ message: String) -> Bool {
         let m = message.lowercased()
         return m.contains("sign in to confirm") || m.contains("not a bot")
+    }
+
+    private nonisolated func is429(_ message: String) -> Bool {
+        let m = message.lowercased()
+        return m.contains("http error 429") || m.contains("too many requests")
     }
 }
