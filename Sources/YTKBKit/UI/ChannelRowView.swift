@@ -5,14 +5,10 @@ struct ChannelRowView: View {
     let isPollingThis: Bool
     var isFocused: Bool = false
     var progress: ChannelProgress? = nil
-    /// Display label for the global default interval (e.g. "каждые 3 часа").
-    /// Used to render "По умолчанию (каждые 3 часа)" in the context menu.
-    var globalIntervalLabel: String = "по настройкам"
     let onPollOnly: () -> Void
     let onToggleEnabled: () -> Void
     let onRemove: () -> Void
     let onOpenFolder: () -> Void
-    let onSetInterval: (Int?) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -26,11 +22,6 @@ struct ChannelRowView: View {
                             .foregroundStyle(channel.enabled ? .primary : .secondary)
                         if !channel.enabled {
                             Text("(отключён)")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                        }
-                        if let perChannelLabel = perChannelOverrideLabel {
-                            Text(perChannelLabel)
                                 .font(.caption2)
                                 .foregroundStyle(.tertiary)
                         }
@@ -68,31 +59,8 @@ struct ChannelRowView: View {
             Button("Проверить только этот канал", action: onPollOnly)
                 .disabled(isPollingThis || !channel.enabled)
             Divider()
-            Menu("Частота проверки") {
-                intervalMenuItem(title: "По умолчанию (\(globalIntervalLabel))", value: nil)
-                Divider()
-                intervalMenuItem(title: "Каждый час", value: 3600)
-                intervalMenuItem(title: "Каждые 3 часа", value: 10800)
-                intervalMenuItem(title: "Каждые 6 часов", value: 21600)
-                intervalMenuItem(title: "Раз в день", value: 86400)
-                Divider()
-                intervalMenuItem(title: "Только вручную", value: 0)
-            }
             Button(channel.enabled ? "Отключить" : "Включить", action: onToggleEnabled)
             Button("Удалить", role: .destructive, action: onRemove)
-        }
-    }
-
-    @ViewBuilder
-    private func intervalMenuItem(title: String, value: Int?) -> some View {
-        Button {
-            onSetInterval(value)
-        } label: {
-            if channel.pollIntervalSeconds == value {
-                Label(title, systemImage: "checkmark")
-            } else {
-                Text(title)
-            }
         }
     }
 
@@ -104,8 +72,8 @@ struct ChannelRowView: View {
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
                 Spacer()
-                if p.total > 0 {
-                    Text("\(p.current)/\(p.total)")
+                if let label = progressCountLabel(p) {
+                    Text(label)
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
@@ -122,12 +90,28 @@ struct ChannelRowView: View {
         }
     }
 
-    /// When YouTube reports more videos than we could enumerate, surface the
-    /// gap quietly so the user understands the next cycle will pick up more.
+    /// Just the percentage during polling — X/Y дублируется в badge справа
+    /// от названия. Channel-wide whenever possible, falls back to cycle-local.
+    private func progressCountLabel(_ p: ChannelProgress) -> String? {
+        guard p.total > 0 else { return nil }
+        let done = p.alreadyIndexed + p.current
+        if let reported = p.reportedChannelTotal, reported > 0 {
+            return "\(Int((Double(done) / Double(reported)) * 100))%"
+        }
+        let totalGuess = p.alreadyIndexed + p.total
+        if p.alreadyIndexed > 0 && totalGuess > 0 {
+            return "\(Int((Double(done) / Double(totalGuess)) * 100))%"
+        }
+        return "\(Int((Double(p.current) / Double(p.total)) * 100))%"
+    }
+
+    /// When YouTube reports more videos than we could enumerate AND we have
+    /// nothing on disk to make up the gap, surface the difference quietly.
     private func channelTotalMismatch(_ p: ChannelProgress) -> String? {
         guard let reported = p.reportedChannelTotal, reported > 0 else { return nil }
-        guard p.total > 0 && reported > p.total + 5 else { return nil }
-        return "\(p.total) из \(reported) — остальное подтянется"
+        let projectedDone = p.alreadyIndexed + p.total
+        guard p.total > 0 && reported > projectedDone + 5 else { return nil }
+        return "\(projectedDone) из \(reported) — остальное подтянется"
     }
 
     private func progressPhaseLabel(_ p: ChannelProgress) -> String {
@@ -139,12 +123,19 @@ struct ChannelRowView: View {
         }
     }
 
-    /// Indeterminate display for resolving/scanning where total is unknown:
-    /// SwiftUI's ProgressView with value=nil shows the indeterminate animation.
+    /// Indeterminate display for resolving/scanning where total is unknown.
+    /// During processing — channel-wide fraction when we know the channel's
+    /// reported total (so the bar reflects "X out of full channel" instead of
+    /// always 0→100% per cycle). Falls back to cycle-local fraction otherwise.
     private func progressFraction(_ p: ChannelProgress) -> Double? {
         switch p.phase {
         case .resolving, .scanning: return nil
-        case .processing, .retrying: return p.fraction
+        case .processing, .retrying:
+            if let reported = p.reportedChannelTotal, reported > 0 {
+                let done = p.alreadyIndexed + p.current
+                return min(1.0, Double(done) / Double(reported))
+            }
+            return p.fraction
         }
     }
 
@@ -189,10 +180,17 @@ struct ChannelRowView: View {
         return "ещё не проверялся"
     }
 
-    /// Badge text. When YouTube reports a total but we have fewer indexed —
-    /// show "X / Y". When totals match (or only one is known) — show the
-    /// single number. Falls back to nothing if both are zero.
+    /// Badge text. While polling — uses live ChannelProgress numbers
+    /// (alreadyIndexed + current vs reportedChannelTotal) so the badge stays
+    /// accurate during the cycle. Otherwise — persisted indexedCount/videoCount.
     private var videoCountLabel: String? {
+        if isPollingThis, let p = progress {
+            let done = p.alreadyIndexed + p.current
+            if let reported = p.reportedChannelTotal, reported > 0 {
+                return "\(done) / \(reported)"
+            }
+            if p.alreadyIndexed > 0 { return "\(done)" }
+        }
         let indexed = channel.indexedCount
         let total = channel.videoCount ?? 0
         if total > 0 && indexed > 0 && indexed < total {
@@ -221,16 +219,4 @@ struct ChannelRowView: View {
         return "\(Int(interval / 86400)) д назад"
     }
 
-    /// Label suffix shown when the channel has a non-default poll interval.
-    private var perChannelOverrideLabel: String? {
-        guard let v = channel.pollIntervalSeconds else { return nil }
-        if v == 0 { return "(только вручную)" }
-        switch v {
-        case 3600:  return "(ежечасно)"
-        case 10800: return "(каждые 3ч)"
-        case 21600: return "(каждые 6ч)"
-        case 86400: return "(раз в день)"
-        default:    return "(\(v / 60) мин)"
-        }
-    }
 }

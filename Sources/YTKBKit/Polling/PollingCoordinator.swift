@@ -93,7 +93,12 @@ actor PollingCoordinator {
     /// Channels enqueued during awaits inside this loop ARE picked up — the
     /// `while !queue.isEmpty` check re-evaluates after every batch.
     private func runWorker(appState: AppState, initialTrigger: PollTrigger) async {
-        defer { workerRunning = false }
+        let tWorkerStart = Date()
+        Logger.shared.info("runWorker ▶ trigger=\(initialTrigger) queue=\(queue.count)")
+        defer {
+            workerRunning = false
+            Logger.shared.info("runWorker ◀ done in \(Int(Date().timeIntervalSince(tWorkerStart) * 1000))ms")
+        }
         cancellation.reset()
 
         let (kbRoot, config, kbAvailable) = await MainActor.run {
@@ -140,6 +145,9 @@ actor PollingCoordinator {
         let started = kbRoot.startAccessingSecurityScopedResource()
         defer { if started { kbRoot.stopAccessingSecurityScopedResource() } }
 
+        // Parallelism is hardcoded — see plan: один канал в работе (FIFO
+        // очередь), 5 видео параллельно внутри канала. Default from
+        // PollOperation init is 5.
         let op = PollOperation(runner: YTDLPRunner.shared, config: config)
         var totalDownloaded = 0
         var botHit = false
@@ -150,12 +158,14 @@ actor PollingCoordinator {
         drain: while true {
             while !queue.isEmpty {
                 if cancellation.isCancelled { queue.removeAll(); break drain }
-                let maxConcurrent = await MainActor.run { appState.settings.maxConcurrentChannels }
+                // Hardcoded — один канал в работе, остальные в FIFO очереди.
+                let maxConcurrent = 1
                 let batchSize = min(maxConcurrent, queue.count)
                 let batch = Array(queue.prefix(batchSize))
                 queue.removeFirst(batchSize)
                 for ch in batch { inflight.insert(ch.url) }
                 publishQueueSize(appState: appState)
+                Logger.shared.info("runWorker · batch=\(batch.count) (\(batch.map(\.name).joined(separator: ", "))) maxConcChannels=\(maxConcurrent)")
 
                 let reports = await withTaskGroup(of: PollChannelReport.self, returning: [PollChannelReport].self) { group in
                     for ch in batch {
@@ -192,14 +202,7 @@ actor PollingCoordinator {
             if queue.isEmpty { break drain }
         }
 
-        // Fire-and-forget summary; the worker's defer releases the slot
-        // immediately so a pollOne arriving right now spins up a fresh worker.
-        let trigger = initialTrigger
-        let dl = totalDownloaded
-        let bot = botHit
-        Task { [self] in
-            await self.postSummaryNotification(appState: appState, trigger: trigger, totalDownloaded: dl, botHit: bot)
-        }
+        Logger.shared.info("Poll cycle done: downloaded=\(totalDownloaded) botHit=\(botHit) trigger=\(initialTrigger)")
     }
 
     private func pollOneInternal(
@@ -225,8 +228,6 @@ actor PollingCoordinator {
             }
         }
         Logger.shared.info("Polling \(channel.name) (\(channel.url))")
-        let isInitial = channel.lastPolledAt == nil
-        let throttle = NotificationThrottle.shared
         let report = await op.pollChannel(
             channel: channel,
             kbRoot: kbRoot,
@@ -237,32 +238,8 @@ actor PollingCoordinator {
                     appState.channelProgress[channelURL] = event
                 }
             },
-            onIndexed: { [appState, channel, isInitial] indexed in
-                // Per-video notification + recent-video record. Suppressed for
-                // the channel's first ever poll (initial backfill of 500 old
-                // videos isn't "new content" to the user).
-                let event = RecentVideo(
-                    videoId: indexed.videoId,
-                    title: indexed.title,
-                    channelURL: channel.url,
-                    channelName: channel.name,
-                    indexedAt: Date()
-                )
-                Task { @MainActor in
-                    appState.channelStore.appendRecentVideo(event)
-                }
-                if !isInitial {
-                    Task {
-                        let allowed = await throttle.shouldPost(channelURL: channel.url)
-                        guard allowed else { return }
-                        await NotificationsService.shared.postNewVideo(
-                            channelName: channel.name,
-                            channelURL: channel.url,
-                            videoTitle: indexed.title,
-                            appState: appState
-                        )
-                    }
-                }
+            onIndexed: { [channel] indexed in
+                Logger.shared.info("indexed · \(channel.name) · \(indexed.videoId) · \(indexed.title ?? "—")")
             }
         )
         await MainActor.run {
@@ -280,6 +257,12 @@ actor PollingCoordinator {
         }
         if built.folderName == nil, let resolvedFolder = report.resolvedFolderName {
             built.folderName = resolvedFolder
+        }
+        if built.channelId == nil, let rid = report.resolvedChannelId, !rid.isEmpty {
+            built.channelId = rid
+        }
+        if report.didFullReconcile {
+            built.lastFullReconcileAt = Date()
         }
         let okCount = report.counts["ok"] ?? 0
         let skippedCount = report.counts["skipped"] ?? 0
@@ -311,52 +294,12 @@ actor PollingCoordinator {
             if okCount == 0, let err = errSnapshot {
                 appState.lastError = err
             }
-            if okCount == 0, let err = errSnapshot, !report.botCheckHit {
-                let name = channel.name
-                let url = channel.url
-                let msg = String(err.prefix(120))
-                Task { await NotificationsService.shared.postChannelError(channelName: name, channelURL: url, message: msg, appState: appState) }
+            if report.botCheckHit {
+                appState.botCheckActive = true
+            } else if okCount > 0 {
+                appState.botCheckActive = false
             }
         }
         return report
-    }
-
-    private func postSummaryNotification(
-        appState: AppState,
-        trigger: PollTrigger,
-        totalDownloaded: Int,
-        botHit: Bool
-    ) async {
-        let notificationsEnabled = await MainActor.run { appState.settings.notificationsEnabled }
-        guard notificationsEnabled else { return }
-        if botHit {
-            await NotificationsService.shared.postBotCheck(appState: appState)
-            return
-        }
-        // Manual triggers: no cycle-summary banner — user already sees the
-        // result in the popover. Per-video banners (sent during the cycle)
-        // are the visible feedback.
-        guard trigger == .scheduled || trigger == .wake else { return }
-        if totalDownloaded > 0 {
-            await NotificationsService.shared.postSuccess(downloaded: totalDownloaded, appState: appState)
-        }
-    }
-}
-
-/// Throttles per-channel new-video banners so the first big incremental burst
-/// doesn't spam Notification Centre. One banner per channel per minute; further
-/// videos in the same window are still recorded into the recent-videos list.
-actor NotificationThrottle {
-    static let shared = NotificationThrottle()
-    private var lastSent: [String: Date] = [:]
-    private let minInterval: TimeInterval = 60
-
-    func shouldPost(channelURL: String) -> Bool {
-        let now = Date()
-        if let last = lastSent[channelURL], now.timeIntervalSince(last) < minInterval {
-            return false
-        }
-        lastSent[channelURL] = now
-        return true
     }
 }

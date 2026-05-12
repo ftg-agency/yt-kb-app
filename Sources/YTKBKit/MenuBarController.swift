@@ -49,12 +49,18 @@ final class MenuBarController: NSObject, NSPopoverDelegate {
         } else {
             stopPulseAnimation(button)
         }
-        // Error badge: tint icon orange-ish if any channel is in error state
-        let hasError = appState.channelStore.channels.contains { $0.lastPollStatus == "error" }
-        let symbol = hasError ? "text.book.closed" : "text.book.closed"
-        let image = NSImage(systemSymbolName: symbol, accessibilityDescription: "yt-kb")
-        image?.isTemplate = true
-        button.image = image
+        let image = NSImage(systemSymbolName: "text.book.closed", accessibilityDescription: "yt-kb")
+        if appState.botCheckActive {
+            // Color tint requires non-template image — switch off template flag
+            // so contentTintColor takes effect.
+            image?.isTemplate = false
+            button.image = image
+            button.contentTintColor = .systemRed
+        } else {
+            image?.isTemplate = true
+            button.image = image
+            button.contentTintColor = nil
+        }
     }
 
     private func startPulseAnimation(_ button: NSStatusBarButton) {

@@ -29,8 +29,6 @@ struct SettingsView: View {
     }
 
     @State private var selection: SettingsSection = .general
-    @State private var showKBImportInfo: Bool = false
-    @State private var showJSONImportInfo: Bool = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -138,16 +136,9 @@ struct SettingsView: View {
                 ForEach(appState.channelStore.channels) { channel in
                     SettingsChannelRow(
                         channel: channel,
-                        globalLabel: appState.settings.pollInterval.shortLabel,
                         progress: appState.channelProgress[channel.url],
                         isPollingThis: appState.pollingChannelURLs.contains(channel.url),
                         folderName: resolvedFolderName(for: channel),
-                        onSetInterval: { value in
-                            var updated = channel
-                            updated.pollIntervalSeconds = value
-                            appState.channelStore.updateChannel(updated)
-                            appState.restartScheduler()
-                        },
                         onToggleEnabled: {
                             var updated = channel
                             updated.enabled.toggle()
@@ -246,12 +237,6 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Section("Уведомления") {
-                Toggle("Сообщать о новых видео и ошибках", isOn: Binding(
-                    get: { appState.settings.notificationsEnabled },
-                    set: { appState.settings.setNotificationsEnabled($0) }
-                ))
-            }
             Section("Запуск") {
                 Toggle("Запускать при входе в систему", isOn: Binding(
                     get: { appState.settings.launchAtLogin },
@@ -291,80 +276,12 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Section("Параллельность") {
-                Stepper(
-                    "Каналов параллельно: \(appState.settings.maxConcurrentChannels)",
-                    value: Binding(
-                        get: { appState.settings.maxConcurrentChannels },
-                        set: { appState.settings.setMaxConcurrentChannels($0) }
-                    ),
-                    in: 1...4
-                )
-                Text("Больше — быстрее, но YouTube может временно ограничить доступ.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
             Section("Энергосбережение") {
                 Toggle("Не давать Mac засыпать во время индексации", isOn: Binding(
                     get: { appState.settings.preventSleepDuringPoll },
                     set: { appState.settings.setPreventSleepDuringPoll($0) }
                 ))
                 Text("Если ноутбук закрыт и работает от батареи — macOS всё равно может приостановить работу.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Section("Тихие часы") {
-                Toggle("Не опрашивать в выбранные часы", isOn: Binding(
-                    get: { appState.settings.quietHoursEnabled },
-                    set: {
-                        appState.settings.setQuietHours(
-                            enabled: $0,
-                            start: appState.settings.quietHoursStart,
-                            end: appState.settings.quietHoursEnd
-                        )
-                    }
-                ))
-                if appState.settings.quietHoursEnabled {
-                    HStack {
-                        Stepper("С \(appState.settings.quietHoursStart):00", value: Binding(
-                            get: { appState.settings.quietHoursStart },
-                            set: {
-                                appState.settings.setQuietHours(
-                                    enabled: true,
-                                    start: $0,
-                                    end: appState.settings.quietHoursEnd
-                                )
-                            }
-                        ), in: 0...23)
-                        Stepper("До \(appState.settings.quietHoursEnd):00", value: Binding(
-                            get: { appState.settings.quietHoursEnd },
-                            set: {
-                                appState.settings.setQuietHours(
-                                    enabled: true,
-                                    start: appState.settings.quietHoursStart,
-                                    end: $0
-                                )
-                            }
-                        ), in: 0...23)
-                    }
-                }
-            }
-            Section("Сеть") {
-                HStack {
-                    Text("Пауза между запросами:")
-                    Slider(
-                        value: Binding(
-                            get: { appState.settings.sleepRequests },
-                            set: { appState.settings.setSleepRequests($0) }
-                        ),
-                        in: 0...5,
-                        step: 0.5
-                    )
-                    Text("\(appState.settings.sleepRequests, specifier: "%.1f") c")
-                        .monospacedDigit()
-                        .frame(width: 50, alignment: .trailing)
-                }
-                Text("Снижает шанс что YouTube начнёт временно ограничивать доступ.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -379,38 +296,6 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 LanguagePriorityList(appState: appState)
-            }
-            Section("Импорт / экспорт") {
-                HStack {
-                    Button("Импортировать каналы из существующей KB-папки") { rediscover() }
-                    Button {
-                        showKBImportInfo.toggle()
-                    } label: {
-                        Image(systemName: "info.circle")
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.borderless)
-                    .popover(isPresented: $showKBImportInfo, arrowEdge: .top) {
-                        kbImportInfoPopover
-                    }
-                    Spacer()
-                }
-                Button("Экспортировать список каналов в JSON…") { exportChannels() }
-                    .disabled(appState.channelStore.channels.isEmpty)
-                HStack {
-                    Button("Импортировать каналы из JSON…") { importChannels() }
-                    Button {
-                        showJSONImportInfo.toggle()
-                    } label: {
-                        Image(systemName: "info.circle")
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.borderless)
-                    .popover(isPresented: $showJSONImportInfo, arrowEdge: .top) {
-                        jsonImportInfoPopover
-                    }
-                    Spacer()
-                }
             }
             if !appState.channelStore.retryQueue.isEmpty {
                 Section("Видео в ожидании субтитров") {
@@ -665,40 +550,6 @@ struct SettingsView: View {
         return f
     }()
 
-    private var kbImportInfoPopover: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Формат KB-папки").font(.headline)
-            Text("Сканирует выбранную папку и подхватывает каналы из подпапок верхнего уровня.")
-                .font(.caption)
-            Text("На канал нужно минимум одно `.md`-видео. Чтобы определить имя и URL, приложение читает либо `index.md` (`# Имя канала` + строка `**Канал:** <url>`), либо YAML-frontmatter в любом видеофайле канала с полями `channel:` и `channel_url:`.")
-                .font(.caption)
-            Text("Имя самой подпапки роли не играет — метаданные читаются изнутри файлов, поэтому папки, оставшиеся от прежних версий, тоже подхватятся.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .padding(12)
-        .frame(width: 360, alignment: .leading)
-    }
-
-    private var jsonImportInfoPopover: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Формат JSON").font(.headline)
-            Text("Файл — массив объектов. Поля каждого:")
-                .font(.caption)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("• `url` — URL канала на YouTube (обязательно)").font(.caption)
-                Text("• `name` — отображаемое имя (обязательно)").font(.caption)
-                Text("• `channel_id` — ID канала `UCxxxxx…` (опционально)").font(.caption)
-                Text("• `enabled` — bool, по умолчанию `true` (опционально)").font(.caption)
-            }
-            Text("Дубликаты по `url` пропускаются. Формат симметричен с экспортом — выгрузить пример можно через «Экспортировать список каналов в JSON…».")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .padding(12)
-        .frame(width: 360, alignment: .leading)
-    }
-
     private var appVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0"
     }
@@ -822,85 +673,6 @@ struct SettingsView: View {
         }
     }
 
-    private func exportChannels() {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [.json]
-        panel.nameFieldStringValue = "yt-kb-channels.json"
-        panel.title = "Экспорт каналов"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            let payload = appState.channelStore.channels.map { ch -> [String: Any] in
-                var dict: [String: Any] = ["url": ch.url, "name": ch.name, "enabled": ch.enabled]
-                if let cid = ch.channelId { dict["channel_id"] = cid }
-                return dict
-            }
-            let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
-            try data.write(to: url)
-        } catch {
-            let alert = NSAlert()
-            alert.messageText = "Не удалось экспортировать"
-            alert.informativeText = "\(error)"
-            alert.alertStyle = .warning
-            alert.runModal()
-        }
-    }
-
-    private func importChannels() {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.json]
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.title = "Импорт каналов"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            let data = try Data(contentsOf: url)
-            guard let array = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
-                throw NSError(domain: "YTKB", code: 1, userInfo: [NSLocalizedDescriptionKey: "Ожидается массив каналов"])
-            }
-            // Discover once: if any imported channel already has a folder on
-            // disk (from a prior install), reuse its name instead of letting
-            // the first poll create a duplicate clean-slug sibling.
-            var existingByURL: [String: String] = [:]
-            if let kb = appState.settings.kbDirectory {
-                let started = kb.startAccessingSecurityScopedResource()
-                for d in AutoDiscovery.discover(in: kb) {
-                    existingByURL[KBConsolidator.normalizeURL(d.url)] = d.folderName
-                }
-                if started { kb.stopAccessingSecurityScopedResource() }
-            }
-
-            var added = 0
-            for entry in array {
-                guard let url = entry["url"] as? String, !url.isEmpty,
-                      let name = entry["name"] as? String, !name.isEmpty else { continue }
-                if appState.channelStore.channels.contains(where: { $0.url == url }) { continue }
-                let ch = TrackedChannel(
-                    url: url,
-                    channelId: entry["channel_id"] as? String,
-                    name: name,
-                    addedAt: Date(),
-                    lastPolledAt: nil,
-                    lastPollStatus: nil,
-                    lastPollError: nil,
-                    enabled: (entry["enabled"] as? Bool) ?? true,
-                    folderName: existingByURL[KBConsolidator.normalizeURL(url)]
-                )
-                appState.channelStore.addChannel(ch)
-                added += 1
-            }
-            let alert = NSAlert()
-            alert.messageText = "Импортировано: \(added)"
-            alert.informativeText = added > 0 ? "Добавлено \(added) новых каналов на отслеживание." : "Все каналы из файла уже есть в списке."
-            alert.alertStyle = .informational
-            alert.runModal()
-        } catch {
-            let alert = NSAlert()
-            alert.messageText = "Не удалось импортировать"
-            alert.informativeText = "\(error)"
-            alert.alertStyle = .warning
-            alert.runModal()
-        }
-    }
 }
 
 private struct LanguagePriorityList: View {

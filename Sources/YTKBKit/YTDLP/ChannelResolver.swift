@@ -10,6 +10,14 @@ struct ResolvedChannel {
     let reportedTotalCount: Int?
 }
 
+/// Lightweight resolve result used by the "Add channel" flow. Holds only the
+/// data needed to show "канал найден" + persist as TrackedChannel.
+package struct ResolvedChannelLite: Sendable {
+    package let name: String
+    package let channelId: String?
+    package let channelURL: String
+}
+
 package actor ChannelResolver {
     private let runner: YTDLPRunner
     private let config: YTDLPConfig
@@ -73,6 +81,75 @@ package actor ChannelResolver {
         )
     }
 
+    /// Fast path for "Add channel": single yt-dlp call with `--playlist-items 0`
+    /// so yt-dlp returns channel-level metadata without enumerating any entries.
+    /// Saves up to ~15 heavyweight enumerations vs. `resolveMetadata`. Caller
+    /// should fall back to `resolveMetadata` on any failure (geoblock, weird
+    /// channel URL, missing fields).
+    func quickResolve(channelURL: String) async throws -> ResolvedChannelLite {
+        let t0 = Date()
+        let normalised = Self.normaliseChannelURL(channelURL)
+        Logger.shared.info("quickResolve ▶ url=\(channelURL) → normalised=\(normalised)")
+        // Минимальный args — без cookies (channel metadata публично,
+        // декриптование Chrome keychain съедает ~5-8с) и без --sleep-requests
+        // (один запрос, rate-limit не нужен). Если упало — fallback на
+        // resolveMetadata уже c полным config.baseArgs.
+        let args = [
+            "--flat-playlist",
+            "--playlist-items", "0",
+            "--dump-single-json",
+            "--no-warnings",
+            normalised
+        ]
+        let result: YTDLPResult
+        do {
+            result = try await runner.run(args, timeout: 20)
+        } catch {
+            Logger.shared.warn("quickResolve ◀ runner threw after \(ms(since: t0)): \(error)")
+            throw error
+        }
+        guard result.exitCode == 0 else {
+            Logger.shared.warn("quickResolve ◀ exit=\(result.exitCode) after \(ms(since: t0)): \(result.stderr.lastNonEmptyLine.prefix(160))")
+            throw YTDLPError.nonZeroExit(result.exitCode, result.stderr.lastNonEmptyLine)
+        }
+        let response: FlatPlaylistResponse
+        do {
+            response = try JSONDecoder().decode(FlatPlaylistResponse.self, from: result.stdout)
+        } catch {
+            Logger.shared.warn("quickResolve ◀ JSON decode FAIL after \(ms(since: t0)) (stdout=\(result.stdout.count)B): \(error)")
+            throw YTDLPError.decodeFailed("quickResolve: \(error)")
+        }
+        let name = response.displayName
+        guard !name.isEmpty, name != "Unknown" else {
+            Logger.shared.warn("quickResolve ◀ no channel name after \(ms(since: t0))")
+            throw YTDLPError.decodeFailed("quickResolve: имя канала не получено")
+        }
+        let channelId = response.channelId ?? response.uploaderId
+        let url = response.channelUrl ?? normalised
+        Logger.shared.info("quickResolve ◀ ok in \(ms(since: t0)): \(name) (\(channelId ?? "no-id"))")
+        return ResolvedChannelLite(name: name, channelId: channelId, channelURL: url)
+    }
+
+    private nonisolated func ms(since: Date) -> String {
+        "\(Int(Date().timeIntervalSince(since) * 1000))ms"
+    }
+
+    /// Detects deterministic yt-dlp errors that won't be fixed by trying a
+    /// different player_client. Tab-missing / 404 / auth-required all return
+    /// the same answer regardless of cascade — detecting them lets fetchEntries
+    /// abort the loop instead of burning ~30s × 5 clients × 3 tabs.
+    private static func isMissingTabError(_ stderr: String) -> Bool {
+        let lower = stderr.lowercased()
+        return lower.contains("does not have a shorts tab")
+            || lower.contains("does not have a streams tab")
+            || lower.contains("does not have a live tab")
+            || lower.contains("does not have a videos tab")
+            || (lower.contains("this channel does not have") && lower.contains("tab"))
+            || lower.contains("http error 404")
+            || lower.contains("require authentication")
+            || (lower.contains("not found") && lower.contains("youtube:tab"))
+    }
+
     func listVideos(channelURL: String) async throws -> [VideoRef] {
         let merged = try await fetchAllTabs(channelURL: channelURL)
         return merged.videos
@@ -107,8 +184,10 @@ package actor ChannelResolver {
     /// dedup by video_id (preserving first occurrence so chronological order
     /// from /videos wins for channels where it matters), and merge metadata.
     private func fetchAllTabs(channelURL: String) async throws -> MergedTabs {
+        let t0 = Date()
         let urls = Self.enumerationURLs(for: channelURL)
-        Logger.shared.info("ChannelResolver: enumerating tabs \(urls)")
+        Logger.shared.info("fetchAllTabs ▶ \(urls.count) tabs: \(urls)")
+        defer { Logger.shared.info("fetchAllTabs ◀ total \(ms(since: t0))") }
 
         var responses: [(url: String, response: FlatPlaylistResponse)] = []
         var lastErrorMessage: String?
@@ -181,7 +260,9 @@ package actor ChannelResolver {
     ]
 
     private func fetchEntries(channelURL: String) async throws -> FlatPlaylistResponse {
+        let tStart = Date()
         let normalised = Self.normaliseChannelURL(channelURL)
+        Logger.shared.info("fetchEntries ▶ \(normalised)")
 
         var lastError: Error?
         var bestResponse: FlatPlaylistResponse?
@@ -189,12 +270,13 @@ package actor ChannelResolver {
         var allCounts: [(client: String, count: Int)] = []
 
         for clients in Self.playerClientCascade {
+            let tClient = Date()
             do {
                 let response = try await fetchOnce(url: normalised, playerClients: clients)
                 let count = response.entries?.count ?? 0
                 let reported = response.playlistCount ?? -1
                 allCounts.append((clients, count))
-                Logger.shared.info("ChannelResolver: clients=\(clients) → \(count) entries (yt-dlp reports playlist_count=\(reported))")
+                Logger.shared.info("fetchEntries · clients=\(clients) → \(count) entries (reported=\(reported)) in \(ms(since: tClient))")
                 if count > bestCount {
                     bestResponse = response
                     bestCount = count
@@ -206,8 +288,15 @@ package actor ChannelResolver {
                     break
                 }
             } catch {
-                Logger.shared.warn("ChannelResolver: clients=\(clients) failed: \(error)")
+                Logger.shared.warn("fetchEntries · clients=\(clients) FAIL in \(ms(since: tClient)): \(error)")
                 lastError = error
+                // Deterministic "no such tab" — don't waste 4 more player_clients
+                // (yt-dlp returns same answer for all, each call ~17-27s due to
+                // --sleep-requests). Abort cascade for this tab.
+                if Self.isMissingTabError("\(error)") {
+                    Logger.shared.info("fetchEntries · tab отсутствует — обрываем каскад")
+                    break
+                }
                 continue
             }
         }
@@ -216,12 +305,13 @@ package actor ChannelResolver {
             let reported = best.playlistCount ?? -1
             let summary = allCounts.map { "\($0.client)=\($0.count)" }.joined(separator: ", ")
             if reported > 0 && bestCount < reported - 5 {
-                Logger.shared.warn("ChannelResolver: BEST got \(bestCount) of \(reported) reported (yt-dlp can't enumerate the rest). Per-client: \(summary)")
+                Logger.shared.warn("fetchEntries ◀ BEST=\(bestCount)/\(reported) reported (incomplete) in \(ms(since: tStart)). Per-client: \(summary)")
             } else {
-                Logger.shared.info("ChannelResolver: BEST = \(bestCount) entries. Per-client: \(summary)")
+                Logger.shared.info("fetchEntries ◀ BEST=\(bestCount) entries in \(ms(since: tStart)). Per-client: \(summary)")
             }
             return best
         }
+        Logger.shared.warn("fetchEntries ◀ all clients failed in \(ms(since: tStart))")
         throw lastError ?? YTDLPError.decodeFailed("ChannelResolver: all attempts failed")
     }
 

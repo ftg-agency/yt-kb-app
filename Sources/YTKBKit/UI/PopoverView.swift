@@ -15,7 +15,6 @@ struct PopoverView: View {
     @State private var addError: String?
     @State private var addResolvedName: String?
     @State private var addResolvedChannelId: String?
-    @State private var addResolvedVideoCount: Int?
     @FocusState private var addURLFocused: Bool
 
     var body: some View {
@@ -26,12 +25,11 @@ struct PopoverView: View {
             if !appState.kbDirectoryAvailable {
                 kbWarningBanner
             }
+            if appState.botCheckActive {
+                botCheckBanner
+            }
             Divider()
             channelSection
-            if !appState.channelStore.recentVideos.isEmpty {
-                Divider()
-                recentVideosSection
-            }
             Divider()
             footerButtons
         }
@@ -42,6 +40,27 @@ struct PopoverView: View {
         .onAppear {
             appState.refreshKBAvailability()
         }
+    }
+
+    private var botCheckBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.shield.fill")
+                .foregroundStyle(.white)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("YouTube требует подтверждение")
+                    .font(.callout)
+                    .fontWeight(.medium)
+                    .foregroundStyle(.white)
+                Text("Войдите в YouTube в выбранном браузере и нажмите «Проверить сейчас».")
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.9))
+                    .lineLimit(2)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.red)
     }
 
     private var kbWarningBanner: some View {
@@ -138,7 +157,6 @@ struct PopoverView: View {
                                     isPollingThis: appState.pollingChannelURLs.contains(channel.url),
                                     isFocused: appState.focusChannelURL == channel.url,
                                     progress: appState.channelProgress[channel.url],
-                                    globalIntervalLabel: appState.settings.pollInterval.shortLabel,
                                     onPollOnly: { Task { await PollingCoordinator.shared.pollOne(channel: channel, appState: appState) } },
                                     onToggleEnabled: {
                                         var updated = channel
@@ -146,13 +164,7 @@ struct PopoverView: View {
                                         appState.channelStore.updateChannel(updated)
                                     },
                                     onRemove: { appState.channelStore.removeChannel(url: channel.url) },
-                                    onOpenFolder: { openChannelFolder(channel: channel) },
-                                    onSetInterval: { value in
-                                        var updated = channel
-                                        updated.pollIntervalSeconds = value
-                                        appState.channelStore.updateChannel(updated)
-                                        appState.restartScheduler()
-                                    }
+                                    onOpenFolder: { openChannelFolder(channel: channel) }
                                 )
                                 .id(channel.url)
                             }
@@ -181,57 +193,6 @@ struct PopoverView: View {
                     .lineLimit(3)
                     .padding(.horizontal, 12)
                     .padding(.bottom, 6)
-            }
-        }
-    }
-
-    private var recentVideosSection: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Новое")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button {
-                    appState.channelStore.clearRecentVideos()
-                } label: {
-                    Text("Очистить")
-                        .font(.caption2)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 12)
-            .padding(.top, 8)
-            .padding(.bottom, 4)
-            VStack(spacing: 0) {
-                ForEach(Array(appState.channelStore.recentVideos.prefix(5))) { v in
-                    Button {
-                        if let url = URL(string: v.youtubeURL) { NSWorkspace.shared.open(url) }
-                    } label: {
-                        HStack(spacing: 6) {
-                            Image(systemName: "play.rectangle.fill")
-                                .foregroundStyle(.secondary)
-                                .font(.caption)
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(v.title ?? v.videoId)
-                                    .font(.caption)
-                                    .lineLimit(1)
-                                    .truncationMode(.tail)
-                                Text("\(v.channelName) · \(relativeTime(v.indexedAt))")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                                    .truncationMode(.tail)
-                            }
-                            Spacer()
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 4)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                }
             }
         }
     }
@@ -419,24 +380,68 @@ struct PopoverView: View {
         addError = nil
         addResolvedName = nil
         addResolvedChannelId = nil
-        addResolvedVideoCount = nil
         addResolving = true
 
         let config = appState.settings.ytdlpConfig
         Task {
-            defer { Task { @MainActor in addResolving = false } }
+            let tStart = Date()
+            Logger.shared.info("addChannel ▶▶▶ \(raw)")
+            defer {
+                let ms = Int(Date().timeIntervalSince(tStart) * 1000)
+                Logger.shared.info("addChannel ◀◀◀ wallclock=\(ms)ms")
+                Task { @MainActor in addResolving = false }
+            }
+            let resolver = ChannelResolver(runner: YTDLPRunner.shared, config: config)
+            let lite: ResolvedChannelLite
+
+            // Path 1: HTML scrape (~500ms, no yt-dlp). Works for any public channel.
             do {
-                let resolver = ChannelResolver(runner: YTDLPRunner.shared, config: config)
-                let result = try await resolver.resolveMetadata(channelURL: raw)
+                let html = try await ChannelPageFetcher.shared.fetchMetadata(channelURL: raw)
+                lite = ResolvedChannelLite(
+                    name: html.name,
+                    channelId: html.channelId,
+                    channelURL: html.canonicalURL
+                )
+                Logger.shared.info("addChannel · channelPage win")
                 await MainActor.run {
-                    addResolvedName = result.name
-                    addResolvedChannelId = result.channelId
-                    addResolvedVideoCount = result.reportedTotalCount
+                    addResolvedName = lite.name
+                    addResolvedChannelId = lite.channelId
                 }
+                return
+            } catch ChannelPageFetcher.FetchError.http(let code) where code == 404 {
+                // Definitive — channel doesn't exist. Skip yt-dlp fallback
+                // (it would just retry 404 for ~2 minutes via cascade).
+                Logger.shared.warn("addChannel · channel не существует (HTTP 404)")
+                await MainActor.run { self.addError = "Канал не существует" }
+                return
             } catch {
-                await MainActor.run {
-                    self.addError = "\(error)"
+                Logger.shared.warn("addChannel · channelPage FAIL (\(error)) — fallback to yt-dlp quickResolve")
+            }
+
+            // Path 2: yt-dlp quickResolve (~3-10s).
+            do {
+                lite = try await resolver.quickResolve(channelURL: raw)
+                Logger.shared.info("addChannel · quickResolve win")
+            } catch {
+                Logger.shared.warn("addChannel · quickResolve FAIL (\(error)) — fallback to full resolveMetadata")
+                // Path 3: full resolveMetadata with cascade (~30s+).
+                do {
+                    let full = try await resolver.resolveMetadata(channelURL: raw)
+                    lite = ResolvedChannelLite(
+                        name: full.name,
+                        channelId: full.channelId,
+                        channelURL: full.channelURL
+                    )
+                    Logger.shared.info("addChannel · resolveMetadata fallback win")
+                } catch {
+                    Logger.shared.error("addChannel · ALL paths failed: \(error)")
+                    await MainActor.run { self.addError = "\(error)" }
+                    return
                 }
+            }
+            await MainActor.run {
+                addResolvedName = lite.name
+                addResolvedChannelId = lite.channelId
             }
         }
     }
@@ -449,7 +454,7 @@ struct PopoverView: View {
             channelId: addResolvedChannelId,
             name: name,
             addedAt: Date(),
-            videoCount: addResolvedVideoCount,
+            videoCount: nil,
             folderName: resolveExistingFolderName(name: name, url: url)
         )
         appState.channelStore.addChannel(channel)

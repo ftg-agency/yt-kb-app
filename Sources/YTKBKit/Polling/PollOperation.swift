@@ -17,6 +17,15 @@ struct PollChannelReport {
     /// /streams). Captured during channel resolve, used by PollingCoordinator
     /// to update TrackedChannel.videoCount.
     var reportedChannelTotal: Int?
+    /// True iff this cycle went through a full yt-dlp enumeration (initial
+    /// indexing, weekly reconcile, or RSS fallback). PollingCoordinator stamps
+    /// `TrackedChannel.lastFullReconcileAt = Date()` when this is true.
+    var didFullReconcile: Bool = false
+    /// Channel-id (UC...) that we picked up during a full enumeration. nil if
+    /// channel went through RSS path (we already had the id). Coordinator
+    /// persists this onto `TrackedChannel.channelId` for channels added before
+    /// channelId was captured.
+    var resolvedChannelId: String?
     /// New entries to add to retry_queue (no_subs videos seen for the first time).
     var newRetries: [RetryQueueEntry] = []
     /// Entries to update (after a retry attempt: success → remove via `resolvedRetries`, no_subs → bump attempts).
@@ -32,10 +41,25 @@ struct PollChannelReport {
 
 /// Lightweight signal emitted from PollOperation each time a video is
 /// successfully transcribed and written to disk. PollingCoordinator turns these
-/// into recent-videos entries and (for non-initial cycles) per-video banners.
+/// into recent-videos entries.
 package struct IndexedVideoEvent: Sendable {
     package let videoId: String
     package let title: String?
+}
+
+/// Per-video processing result. `resolvedFolderName` is the folder name
+/// derived from this video's metadata — set when the channel had no pinned
+/// folder yet, so the caller can persist it onto TrackedChannel.
+private struct VideoProcessOutcome: Sendable {
+    let outcome: PollOutcome
+    let resolvedFolderName: String?
+}
+
+/// Monotonic counter used to drive ChannelProgress.current when videos
+/// complete out of order (TaskGroup with sliding window).
+private actor ProgressCounter {
+    private var value = 0
+    func advance() -> Int { value += 1; return value }
 }
 
 actor PollOperation {
@@ -44,13 +68,15 @@ actor PollOperation {
     private let subs: SubsDownloader
     private let resolver: ChannelResolver
     private let languagePriority: [String]
+    private let maxConcurrentVideos: Int
 
-    package init(runner: YTDLPRunner, config: YTDLPConfig) {
+    package init(runner: YTDLPRunner, config: YTDLPConfig, maxConcurrentVideos: Int = 2) {
         self.runner = runner
         self.metadata = MetadataFetcher(runner: runner, config: config)
         self.subs = SubsDownloader(runner: runner, config: config)
         self.resolver = ChannelResolver(runner: runner, config: config)
         self.languagePriority = config.languagePriority
+        self.maxConcurrentVideos = max(1, min(8, maxConcurrentVideos))
     }
 
     /// Process one channel: list videos → diff vs existing → for each new, fetch+subs+write.
@@ -67,81 +93,274 @@ actor PollOperation {
     ) async -> PollChannelReport {
         var report = PollChannelReport()
         let isInitial = channel.lastPolledAt == nil
+        let tStart = Date()
 
         if cancellation.isCancelled { report.cancelled = true; return report }
 
         progress(ChannelProgress(phase: .resolving, current: 0, total: 0, label: nil, isInitialIndexing: isInitial))
+
+        // === Pick listing path ===
+        // - First-ever poll on this channel → full enumeration (we want
+        //   everything historical).
+        // - lastFullReconcileAt missing or older than 7 days → full enum as
+        //   a safety net against missed RSS deltas.
+        // - channelId missing (channel added before we captured it) → full
+        //   enum so we can populate it.
+        // - otherwise → RSS feed, fallback to full on any RSS error.
+        let weekAgo = Date().addingTimeInterval(-7 * 24 * 3600)
+        let needsWeeklyReconcile = (channel.lastFullReconcileAt ?? .distantPast) < weekAgo
+        let hasChannelId = (channel.channelId?.hasPrefix("UC") == true)
+        let preferFull = isInitial || needsWeeklyReconcile || !hasChannelId
+
+        let pathDecision = preferFull
+            ? "full (isInitial=\(isInitial) weekly=\(needsWeeklyReconcile) hasChId=\(hasChannelId))"
+            : "rss (channelId=\(channel.channelId!.prefix(20)))"
+        Logger.shared.info("pollChannel ▶ [\(channel.name)] path=\(pathDecision) lastPolled=\(channel.lastPolledAt.map { "\($0)" } ?? "never")")
+
         let videos: [VideoRef]
         let reportedTotal: Int?
-        do {
-            let resolved = try await resolver.listVideosWithCount(channelURL: channel.url)
-            videos = resolved.videos
-            reportedTotal = resolved.reportedTotal
-            report.reportedChannelTotal = reportedTotal
-        } catch {
-            if cancellation.isCancelled { report.cancelled = true; return report }
-            report.firstError = "не удалось получить список видео: \(error)"
-            report.botCheckHit = isBotCheck(report.firstError ?? "")
-            return report
+        var didFullEnum = false
+        let tResolve = Date()
+
+        if preferFull {
+            do {
+                let resolved = try await resolver.resolveMetadata(channelURL: channel.url)
+                videos = resolved.videos
+                reportedTotal = resolved.reportedTotalCount
+                report.reportedChannelTotal = reportedTotal
+                report.resolvedChannelId = resolved.channelId
+                didFullEnum = true
+                Logger.shared.info("pollChannel · [\(channel.name)] full resolve ok in \(msSince(tResolve)): videos=\(videos.count) reported=\(reportedTotal.map(String.init) ?? "—")")
+            } catch {
+                if cancellation.isCancelled { report.cancelled = true; return report }
+                Logger.shared.error("pollChannel · [\(channel.name)] full resolve FAIL in \(msSince(tResolve)): \(error)")
+                report.firstError = "не удалось получить список видео: \(error)"
+                report.botCheckHit = isBotCheck(report.firstError ?? "")
+                return report
+            }
+        } else {
+            do {
+                let rss = try await RSSFetcher.shared.fetchLatest(channelId: channel.channelId!)
+                videos = rss.map { VideoRef(videoId: $0.videoId, title: $0.title) }
+                reportedTotal = nil
+                didFullEnum = false
+                Logger.shared.info("pollChannel · [\(channel.name)] RSS ok in \(msSince(tResolve)): \(videos.count) видео")
+            } catch {
+                Logger.shared.warn("pollChannel · [\(channel.name)] RSS FAIL (\(error)) — fallback to full enumeration")
+                let tFull = Date()
+                do {
+                    let resolved = try await resolver.resolveMetadata(channelURL: channel.url)
+                    videos = resolved.videos
+                    reportedTotal = resolved.reportedTotalCount
+                    report.reportedChannelTotal = reportedTotal
+                    report.resolvedChannelId = resolved.channelId
+                    didFullEnum = true
+                    Logger.shared.info("pollChannel · [\(channel.name)] fallback full resolve ok in \(msSince(tFull))")
+                } catch {
+                    if cancellation.isCancelled { report.cancelled = true; return report }
+                    Logger.shared.error("pollChannel · [\(channel.name)] fallback full ALSO FAIL: \(error)")
+                    report.firstError = "RSS + full enumeration оба упали: \(error)"
+                    report.botCheckHit = isBotCheck(report.firstError ?? "")
+                    return report
+                }
+            }
         }
+        let resolveMs = Int(Date().timeIntervalSince(tResolve) * 1000)
+        report.didFullReconcile = didFullEnum
 
         if cancellation.isCancelled { report.cancelled = true; return report }
 
         progress(ChannelProgress(phase: .scanning, current: 0, total: 0, label: nil, isInitialIndexing: isInitial, reportedChannelTotal: reportedTotal))
+        let tScan = Date()
         let existing = KBScanner.scanExistingIds(in: kbRoot)
         let retryIds = Set(priorRetries.map(\.videoId))
         let toProcess = videos.filter { existing[$0.videoId] == nil && !retryIds.contains($0.videoId) }
+        let scanMs = Int(Date().timeIntervalSince(tScan) * 1000)
         let reportedSummary = reportedTotal.map { " channelTotal=\($0)" } ?? ""
-        Logger.shared.info("[\(channel.name)] found=\(videos.count) new=\(toProcess.count) retries=\(priorRetries.count)\(reportedSummary)")
+        let pathLabel = didFullEnum ? "full" : "rss"
+        Logger.shared.info("[\(channel.name)] source=\(pathLabel) found=\(videos.count) new=\(toProcess.count) retries=\(priorRetries.count)\(reportedSummary)")
+
+        // Channel-wide baseline: how many of this channel's videos are
+        // already on disk before this cycle starts. Used by UI to show
+        // "(alreadyIndexed + current) / reportedChannelTotal" instead of
+        // cycle-local current/total (which resets to 0 each poll).
+        // Preference order:
+        //   1. countIndexedVideos in pinned folder — most accurate
+        //   2. videos ∩ existing — fallback when folderName not pinned
+        let alreadyIndexed: Int
+        if let folder = channel.folderName, !folder.isEmpty {
+            alreadyIndexed = KBScanner.countIndexedVideos(in: kbRoot.appendingPathComponent(folder))
+        } else {
+            alreadyIndexed = videos.filter { existing[$0.videoId] != nil }.count
+        }
+        Logger.shared.info("pollChannel · [\(channel.name)] alreadyIndexed=\(alreadyIndexed) scan=\(scanMs)ms")
 
         let eligible = RetryProcessor.eligibleEntries(priorRetries)
         let totalSteps = toProcess.count + eligible.count
+        let counter = ProgressCounter()
+        Logger.shared.info("pollChannel · [\(channel.name)] toProcess=\(toProcess.count) eligibleRetries=\(eligible.count) maxParallel=\(maxConcurrentVideos)")
+        let tProcessing = Date()
 
-        // First, process new videos
-        for (idx, ref) in toProcess.enumerated() {
-            if cancellation.isCancelled { report.cancelled = true; return report }
-            let label = ref.title.map { String($0.prefix(60)) } ?? ref.videoId
-            progress(ChannelProgress(
-                phase: .processing,
-                current: idx + 1,
-                total: totalSteps,
-                label: label,
-                isInitialIndexing: isInitial,
-                reportedChannelTotal: reportedTotal
-            ))
-            let outcome = await processVideo(ref: ref, kbRoot: kbRoot, channel: channel, report: &report)
-            applyOutcome(outcome, ref: ref, channelURL: channel.url, channelName: channel.name, isRetry: false, report: &report)
-            if case .ok = outcome {
-                onIndexed?(IndexedVideoEvent(videoId: ref.videoId, title: ref.title))
-            }
-            if report.botCheckHit { return report }
+        // === New videos in parallel ===
+        if !toProcess.isEmpty {
+            await runParallel(
+                items: toProcess.map { ($0, nil as RetryQueueEntry?) },
+                isRetry: false,
+                totalSteps: totalSteps,
+                isInitial: isInitial,
+                reportedTotal: reportedTotal,
+                alreadyIndexed: alreadyIndexed,
+                kbRoot: kbRoot,
+                channel: channel,
+                cancellation: cancellation,
+                counter: counter,
+                progress: progress,
+                onIndexed: onIndexed,
+                report: &report
+            )
         }
+        if report.botCheckHit || report.cancelled { return report }
 
-        // Then, process eligible retry-queue entries
+        // === Retry queue in parallel (after new videos finish) ===
         if !eligible.isEmpty {
-            Logger.shared.info("[\(channel.name)] processing \(eligible.count) retry entries")
-        }
-        for (idx, entry) in eligible.enumerated() {
-            if cancellation.isCancelled { report.cancelled = true; return report }
-            let ref = VideoRef(videoId: entry.videoId, title: entry.videoTitle)
-            let label = entry.videoTitle.map { String($0.prefix(60)) } ?? entry.videoId
-            progress(ChannelProgress(
-                phase: .retrying,
-                current: toProcess.count + idx + 1,
-                total: totalSteps,
-                label: label,
-                isInitialIndexing: false,
-                reportedChannelTotal: reportedTotal
-            ))
-            let outcome = await processVideo(ref: ref, kbRoot: kbRoot, channel: channel, report: &report)
-            applyOutcome(outcome, ref: ref, channelURL: channel.url, channelName: channel.name, isRetry: true, report: &report, priorEntry: entry)
-            if case .ok = outcome {
-                onIndexed?(IndexedVideoEvent(videoId: ref.videoId, title: ref.title))
-            }
-            if report.botCheckHit { return report }
+            Logger.shared.info("pollChannel · [\(channel.name)] processing \(eligible.count) retries")
+            let items = eligible.map { (VideoRef(videoId: $0.videoId, title: $0.videoTitle), $0 as RetryQueueEntry?) }
+            await runParallel(
+                items: items,
+                isRetry: true,
+                totalSteps: totalSteps,
+                isInitial: false,
+                reportedTotal: reportedTotal,
+                alreadyIndexed: alreadyIndexed,
+                kbRoot: kbRoot,
+                channel: channel,
+                cancellation: cancellation,
+                counter: counter,
+                progress: progress,
+                onIndexed: onIndexed,
+                report: &report
+            )
         }
 
+        let processingMs = Int(Date().timeIntervalSince(tProcessing) * 1000)
+        let totalMs = Int(Date().timeIntervalSince(tStart) * 1000)
+        let processedCount = totalSteps
+        let perVideoAvg = processedCount > 0 ? processingMs / processedCount : 0
+        let ok = report.counts["ok"] ?? 0
+        let skipped = report.counts["skipped"] ?? 0
+        let noSubs = report.counts["no_subs"] ?? 0
+        let errCount = report.counts["error"] ?? 0
+        Logger.shared.info("pollChannel ◀ [\(channel.name)] DONE total=\(totalMs)ms · resolve=\(resolveMs)ms scan=\(scanMs)ms processing=\(processingMs)ms · ok=\(ok) skipped=\(skipped) noSubs=\(noSubs) error=\(errCount) botCheck=\(report.botCheckHit) · per-video avg=\(perVideoAvg)ms (n=\(processedCount))")
         return report
+    }
+
+    nonisolated private func msSince(_ date: Date) -> String {
+        "\(Int(Date().timeIntervalSince(date) * 1000))ms"
+    }
+
+    /// Sliding-window TaskGroup over a list of video refs. Mutations of
+    /// `report` happen on the consumer side of `group.next()` so there are no
+    /// data races — TaskGroup children just call processVideo and return.
+    private func runParallel(
+        items: [(VideoRef, RetryQueueEntry?)],
+        isRetry: Bool,
+        totalSteps: Int,
+        isInitial: Bool,
+        reportedTotal: Int?,
+        alreadyIndexed: Int,
+        kbRoot: URL,
+        channel: TrackedChannel,
+        cancellation: CancellationFlag,
+        counter: ProgressCounter,
+        progress: @Sendable (ChannelProgress) -> Void,
+        onIndexed: (@Sendable (IndexedVideoEvent) -> Void)?,
+        report: inout PollChannelReport
+    ) async {
+        let maxConc = maxConcurrentVideos
+        let phase: ChannelProgress.Phase = isRetry ? .retrying : .processing
+
+        // Pull a snapshot from inout into local lets so we can read/write
+        // report without the body closure capturing inout from the outer
+        // function — Swift 6's strict concurrency dislikes inout captures
+        // crossing the withTaskGroup body boundary. Merge back at the end.
+        var localReport = report
+        let kb = kbRoot
+        let ch = channel
+
+        await withTaskGroup(of: (VideoRef, RetryQueueEntry?, VideoProcessOutcome).self) { group in
+            var nextIndex = 0
+            var inFlight = 0
+            var stopped = false
+
+            // Seed initial burst
+            while inFlight < maxConc && nextIndex < items.count && !stopped {
+                if cancellation.isCancelled { stopped = true; break }
+                let (ref, priorEntry) = items[nextIndex]
+                nextIndex += 1
+                inFlight += 1
+                group.addTask { [self] in
+                    let outcome = await self.processVideo(ref: ref, kbRoot: kb, channel: ch)
+                    return (ref, priorEntry, outcome)
+                }
+            }
+
+            while let (ref, priorEntry, vpo) = await group.next() {
+                inFlight -= 1
+                let current = await counter.advance()
+                let label = ref.title.map { String($0.prefix(60)) } ?? ref.videoId
+                progress(ChannelProgress(
+                    phase: phase,
+                    current: current,
+                    total: totalSteps,
+                    label: label,
+                    isInitialIndexing: isInitial,
+                    reportedChannelTotal: reportedTotal,
+                    alreadyIndexed: alreadyIndexed
+                ))
+
+                applyOutcome(
+                    vpo.outcome,
+                    ref: ref,
+                    channelURL: ch.url,
+                    channelName: ch.name,
+                    isRetry: isRetry,
+                    report: &localReport,
+                    priorEntry: priorEntry
+                )
+
+                if localReport.resolvedFolderName == nil, let pin = vpo.resolvedFolderName {
+                    localReport.resolvedFolderName = pin
+                }
+                if case .ok = vpo.outcome {
+                    onIndexed?(IndexedVideoEvent(videoId: ref.videoId, title: ref.title))
+                }
+                if cancellation.isCancelled {
+                    localReport.cancelled = true
+                    stopped = true
+                    group.cancelAll()
+                    continue
+                }
+                if localReport.botCheckHit {
+                    stopped = true
+                    group.cancelAll()
+                    continue
+                }
+
+                // Refill the window
+                while inFlight < maxConc && nextIndex < items.count && !stopped {
+                    if cancellation.isCancelled { stopped = true; break }
+                    let (ref2, priorEntry2) = items[nextIndex]
+                    nextIndex += 1
+                    inFlight += 1
+                    group.addTask { [self] in
+                        let outcome = await self.processVideo(ref: ref2, kbRoot: kb, channel: ch)
+                        return (ref2, priorEntry2, outcome)
+                    }
+                }
+            }
+        }
+
+        report = localReport
     }
 
     private func applyOutcome(
@@ -194,44 +413,58 @@ actor PollOperation {
         }
     }
 
-    private func processVideo(ref: VideoRef, kbRoot: URL, channel: TrackedChannel, report: inout PollChannelReport) async -> PollOutcome {
+    /// One-video pipeline: fetch metadata → download subs → render markdown →
+    /// atomic write → rebuild channel index. Pure async (no actor isolation),
+    /// safe to invoke concurrently from a TaskGroup.
+    nonisolated private func processVideo(ref: VideoRef, kbRoot: URL, channel: TrackedChannel) async -> VideoProcessOutcome {
+        let tStart = Date()
         let videoURL = ref.url
+        Logger.shared.info("processVideo ▶ \(ref.videoId) · \(ref.title?.prefix(60) ?? "—")")
         let meta: VideoMetadata
+        let tMeta = Date()
         do {
             meta = try await metadata.fetch(url: videoURL)
+            Logger.shared.info("processVideo · \(ref.videoId) meta ok in \(msSince(tMeta))")
         } catch {
-            return .error(message: "метаданные: \(error)")
+            Logger.shared.warn("processVideo · \(ref.videoId) meta FAIL in \(msSince(tMeta)): \(error)")
+            return VideoProcessOutcome(outcome: .error(message: "метаданные: \(error)"), resolvedFolderName: nil)
         }
+        let metaMs = Int(Date().timeIntervalSince(tMeta) * 1000)
 
-        // Folder pin precedence: channel.folderName (set by Consolidator or a
-        // prior poll) > anything we can derive from the video metadata. Falls
-        // back to a fresh slug only when neither is available.
-        let dirName = channel.folderName
-            ?? report.resolvedFolderName
-            ?? FileNaming.channelDirName(meta: meta)
+        let derivedDir = FileNaming.channelDirName(meta: meta)
+        let dirName = channel.folderName ?? derivedDir
         let channelDir = kbRoot.appendingPathComponent(dirName)
         let videoFileName = FileNaming.videoFileName(meta: meta)
         let videoPath = channelDir.appendingPathComponent(videoFileName)
         if FileManager.default.fileExists(atPath: videoPath.path) {
-            return .skipped
+            Logger.shared.info("processVideo ◀ \(ref.videoId) SKIP (already on disk) total=\(msSince(tStart)) meta=\(metaMs)ms")
+            return VideoProcessOutcome(outcome: .skipped, resolvedFolderName: nil)
         }
 
         let plan = SubsPlanner.buildPlan(meta: meta, languagePriority: languagePriority)
         if plan.attempts.isEmpty {
-            return .noSubs(detail: "нет ни авто, ни ручных сабов в метаданных")
+            Logger.shared.info("processVideo ◀ \(ref.videoId) no-subs (empty plan) total=\(msSince(tStart)) meta=\(metaMs)ms")
+            return VideoProcessOutcome(
+                outcome: .noSubs(detail: "нет ни авто, ни ручных сабов в метаданных"),
+                resolvedFolderName: nil
+            )
         }
+        Logger.shared.info("processVideo · \(ref.videoId) plan=\(plan.attempts.count) attempts")
 
         var failures: [String] = []
+        var attemptSummaries: [String] = []
         let originalLang = meta.language ?? meta.originalLanguage
 
         for attempt in plan.attempts {
             let kindLabel = attempt.isAuto ? "auto" : "manual"
+            let tAttempt = Date()
             let tmpDir = FileManager.default.temporaryDirectory
                 .appendingPathComponent("ytkb-\(UUID().uuidString)", isDirectory: true)
             try? FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: tmpDir) }
 
             let downloaded: DownloadedSubFile
+            let tDownload = Date()
             do {
                 downloaded = try await subs.download(
                     url: videoURL,
@@ -240,19 +473,33 @@ actor PollOperation {
                     into: tmpDir
                 )
             } catch {
+                let downloadMs = Int(Date().timeIntervalSince(tDownload) * 1000)
                 let msg = "\(kindLabel)-subs:\(attempt.langKey) — \(error)"
                 failures.append(msg)
+                attemptSummaries.append("\(attempt.langKey):FAIL@\(downloadMs)ms")
+                Logger.shared.warn("processVideo · \(ref.videoId) subs FAIL (\(kindLabel) \(attempt.langKey)) in \(downloadMs)ms: \(error)")
                 if isBotCheck("\(error)") {
-                    return .error(message: "\(error)")
+                    Logger.shared.error("processVideo · \(ref.videoId) BOT-CHECK detected, aborting")
+                    return VideoProcessOutcome(outcome: .error(message: "\(error)"), resolvedFolderName: nil)
+                }
+                if is429("\(error)") {
+                    Logger.shared.warn("processVideo · \(ref.videoId) HTTP 429 — YouTube rate-limited")
                 }
                 continue
             }
+            let downloadMs = Int(Date().timeIntervalSince(tDownload) * 1000)
 
+            let tParse = Date()
             let segments = SubsDispatcher.parse(downloaded)
+            let parseMs = Int(Date().timeIntervalSince(tParse) * 1000)
             if segments.isEmpty {
                 failures.append("\(kindLabel)-subs:\(attempt.langKey) — \(downloaded.ext) скачался, но 0 сегментов")
+                attemptSummaries.append("\(attempt.langKey):dl=\(downloadMs)ms,parse=\(parseMs)ms,seg=0")
+                Logger.shared.warn("processVideo · \(ref.videoId) subs empty (\(kindLabel) \(attempt.langKey))")
                 continue
             }
+            attemptSummaries.append("\(attempt.langKey):dl=\(downloadMs)ms,parse=\(parseMs)ms,seg=\(segments.count)")
+            Logger.shared.info("processVideo · \(ref.videoId) subs ok (\(kindLabel) \(attempt.langKey)) → \(segments.count) segments in \(msSince(tAttempt))")
 
             let isFallback = SubsPlanner.isFallback(attempt.langKey, original: originalLang)
             let transcript = Transcript(
@@ -262,43 +509,57 @@ actor PollOperation {
                 isFallback: isFallback
             )
 
+            let tRender = Date()
+            let tWrite: Date
+            let renderMs: Int
+            let writeMs: Int
             do {
                 try FileManager.default.createDirectory(at: channelDir, withIntermediateDirectories: true)
                 let body = MarkdownRenderer.render(meta: meta, transcript: transcript)
+                renderMs = Int(Date().timeIntervalSince(tRender) * 1000)
+                tWrite = Date()
                 let tmp = videoPath.appendingPathExtension("tmp")
                 try body.write(to: tmp, atomically: true, encoding: .utf8)
                 _ = try FileManager.default.replaceItemAt(videoPath, withItemAt: tmp)
+                writeMs = Int(Date().timeIntervalSince(tWrite) * 1000)
             } catch {
-                return .error(message: "запись файла: \(error)")
+                return VideoProcessOutcome(outcome: .error(message: "запись файла: \(error)"), resolvedFolderName: nil)
             }
 
-            // Pin the folder we just wrote into so the coordinator can
-            // persist it. Only set when channel had no prior pin (otherwise
-            // we'd be re-affirming the same value the coordinator already has).
-            if channel.folderName == nil, report.resolvedFolderName == nil {
-                report.resolvedFolderName = dirName
-            }
-
+            let tIndex = Date()
             ChannelIndexBuilder.rebuild(
                 channelDir: channelDir,
                 channelName: meta.displayChannel,
                 channelURL: meta.displayChannelURL
             )
+            let indexMs = Int(Date().timeIntervalSince(tIndex) * 1000)
 
             var detail = "\(transcript.source):\(attempt.langKey) (\(segments.count) сегм.)"
             if isFallback {
                 detail += " [fallback с \(originalLang ?? "?")]"
             }
-            return .ok(detail: detail)
+            // Return derived folder name only when channel had no prior pin —
+            // consumer will persist it onto TrackedChannel.
+            let folderPin = channel.folderName == nil ? derivedDir : nil
+            let totalMs = Int(Date().timeIntervalSince(tStart) * 1000)
+            Logger.shared.info("processVideo ◀ \(ref.videoId) OK total=\(totalMs)ms · meta=\(metaMs)ms render=\(renderMs)ms write=\(writeMs)ms index=\(indexMs)ms · attempts=[\(attemptSummaries.joined(separator: ";"))]")
+            return VideoProcessOutcome(outcome: .ok(detail: detail), resolvedFolderName: folderPin)
         }
 
         let first = failures.first.map { String($0.prefix(140)) } ?? "никаких субтитров"
         let extra = failures.count > 1 ? " (+\(failures.count - 1) ещё)" : ""
-        return .noSubs(detail: first + extra)
+        let totalMs = Int(Date().timeIntervalSince(tStart) * 1000)
+        Logger.shared.info("processVideo ◀ \(ref.videoId) no-subs total=\(totalMs)ms · meta=\(metaMs)ms · attempts=[\(attemptSummaries.joined(separator: ";"))]")
+        return VideoProcessOutcome(outcome: .noSubs(detail: first + extra), resolvedFolderName: nil)
     }
 
-    private func isBotCheck(_ message: String) -> Bool {
+    private nonisolated func isBotCheck(_ message: String) -> Bool {
         let m = message.lowercased()
         return m.contains("sign in to confirm") || m.contains("not a bot")
+    }
+
+    private nonisolated func is429(_ message: String) -> Bool {
+        let m = message.lowercased()
+        return m.contains("http error 429") || m.contains("too many requests")
     }
 }

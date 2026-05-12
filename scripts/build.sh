@@ -62,12 +62,15 @@ mkdir -p "$WORK_APP/Contents/MacOS"
 mkdir -p "$WORK_APP/Contents/Resources"
 
 cp "$ROOT/Info.plist" "$WORK_APP/Contents/Info.plist"
+# Embed git SHA so each app instance can log which commit it was built from.
+GIT_SHA=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo "dev")
+/usr/libexec/PlistBuddy -c "Add :GitCommitSHA string $GIT_SHA" "$WORK_APP/Contents/Info.plist" 2>/dev/null \
+    || /usr/libexec/PlistBuddy -c "Set :GitCommitSHA $GIT_SHA" "$WORK_APP/Contents/Info.plist"
+echo "  git commit: $GIT_SHA"
 cp "$EXEC_PATH" "$WORK_APP/Contents/MacOS/$APP_NAME"
 chmod +x "$WORK_APP/Contents/MacOS/$APP_NAME"
 cp "$ROOT/vendored/yt-dlp" "$WORK_APP/Contents/Resources/yt-dlp"
 chmod +x "$WORK_APP/Contents/Resources/yt-dlp"
-shasum -a 256 "$WORK_APP/Contents/Resources/yt-dlp" | awk '{print $1}' > "$WORK_APP/Contents/Resources/yt-dlp.sha256"
-echo "  yt-dlp sha256: $(cat "$WORK_APP/Contents/Resources/yt-dlp.sha256")"
 cp "$ROOT/Resources/AppIcon.icns" "$WORK_APP/Contents/Resources/AppIcon.icns"
 printf 'APPL????' > "$WORK_APP/Contents/PkgInfo"
 echo "  bundle assembled at $WORK_APP"
@@ -77,6 +80,10 @@ xattr -cr "$WORK_APP"
 SIGN_ID="${MACOS_SIGNING_IDENTITY:-}"
 if [[ -z "$SIGN_ID" ]]; then
     echo "  no MACOS_SIGNING_IDENTITY — ad-hoc signing (local dev)"
+    # Sign yt-dlp first, then write sha256, then deep-sign bundle.
+    codesign --force --sign - "$WORK_APP/Contents/Resources/yt-dlp"
+    shasum -a 256 "$WORK_APP/Contents/Resources/yt-dlp" | awk '{print $1}' > "$WORK_APP/Contents/Resources/yt-dlp.sha256"
+    echo "  yt-dlp sha256 (post-codesign): $(cat "$WORK_APP/Contents/Resources/yt-dlp.sha256")"
     codesign --force --deep --sign - "$WORK_APP"
 else
     echo "  signing nested binary: yt-dlp (with library validation disabled)"
@@ -88,6 +95,13 @@ else
         --entitlements "$ROOT/entitlements.plist" \
         --sign "$SIGN_ID" \
         "$WORK_APP/Contents/Resources/yt-dlp"
+    # Write sha256 AFTER yt-dlp codesign but BEFORE bundle codesign — bundle
+    # codesign captures Contents/Resources/* in CodeResources manifest, so the
+    # .sha256 file must be present before we sign the bundle. BinaryIntegrity
+    # at runtime reads this file and compares against the actual on-disk
+    # yt-dlp; both must reflect the post-signing hash.
+    shasum -a 256 "$WORK_APP/Contents/Resources/yt-dlp" | awk '{print $1}' > "$WORK_APP/Contents/Resources/yt-dlp.sha256"
+    echo "  yt-dlp sha256 (post-codesign): $(cat "$WORK_APP/Contents/Resources/yt-dlp.sha256")"
     echo "  signing bundle with entitlements"
     codesign --force --options runtime --timestamp \
         --entitlements "$ROOT/entitlements.plist" \

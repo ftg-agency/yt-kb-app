@@ -67,28 +67,63 @@ actor YTDLPRunner {
         if lower.contains("sign in to confirm") || lower.contains("not a bot") { return false }
         // Format-error is handled by cascade — don't retry at this level
         if lower.contains("requested format is not available") { return false }
+        // 404 / channel not found / auth-required are deterministic — never retry
+        if lower.contains("http error 404") { return false }
+        if lower.contains("not found") && lower.contains("youtube:tab") { return false }
+        if lower.contains("require authentication") { return false }
         return Self.networkErrorMarkers.contains(where: { lower.contains($0) })
     }
 
     /// Run yt-dlp with the given args; returns stdout/stderr and exit code.
     /// Never throws on non-zero exit — caller decides how to interpret stderr.
     /// Transient network failures (DNS, connection reset, timeout) are retried
-    /// up to 3 times with exponential backoff (1s, 2s, 4s).
+    /// up to 3 times with short backoff (1s, 2s, 4s). HTTP 429 (rate-limit)
+    /// also retries but with much longer backoff (15s, 30s, 60s) — YouTube
+    /// throttles per-IP and needs real cooldown.
     func run(_ args: [String], timeout: TimeInterval = 300) async throws -> YTDLPResult {
         var attempt = 0
         let maxAttempts = 3
+        let preview = Self.argsPreview(args)
         while true {
             attempt += 1
+            let t0 = Date()
+            Logger.shared.info("yt-dlp ▶ attempt=\(attempt)/\(maxAttempts) args=\(preview)")
             let result = try await runOnce(args: args)
-            if result.exitCode == 0 { return result }
+            let ms = Int(Date().timeIntervalSince(t0) * 1000)
+            if result.exitCode == 0 {
+                Logger.shared.info("yt-dlp ◀ ok in \(ms)ms (stdout=\(result.stdout.count)B)")
+                return result
+            }
+            Logger.shared.warn("yt-dlp ◀ exit=\(result.exitCode) in \(ms)ms · stderr=\(result.stderr.lastNonEmptyLine.prefix(160))")
+            if attempt < maxAttempts, Self.isRateLimit(result.stderr) {
+                // 15, 30, 60s. YouTube's per-IP rate-limit window is typically
+                // minutes; 4s backoff isn't enough.
+                let delaySeconds: UInt64 = [15, 30, 60][attempt - 1]
+                Logger.shared.warn("yt-dlp 429 rate-limit retry (attempt \(attempt)/\(maxAttempts)) backoff=\(delaySeconds)s")
+                try? await Task.sleep(nanoseconds: delaySeconds * 1_000_000_000)
+                continue
+            }
             if attempt < maxAttempts, Self.isTransientNetworkError(result.stderr) {
                 let delaySeconds = UInt64(pow(2.0, Double(attempt - 1)))  // 1, 2, 4
-                Logger.shared.warn("yt-dlp transient network error (attempt \(attempt)/\(maxAttempts)), backing off \(delaySeconds)s")
+                Logger.shared.warn("yt-dlp transient retry (attempt \(attempt)/\(maxAttempts)) backoff=\(delaySeconds)s")
                 try? await Task.sleep(nanoseconds: delaySeconds * 1_000_000_000)
                 continue
             }
             return result
         }
+    }
+
+    private static func isRateLimit(_ stderr: String) -> Bool {
+        let lower = stderr.lowercased()
+        return lower.contains("http error 429") || lower.contains("too many requests")
+    }
+
+    /// Single-line preview of args for logs. Truncates the URL so the line
+    /// stays readable, keeps every flag.
+    private static func argsPreview(_ args: [String]) -> String {
+        let joined = args.joined(separator: " ")
+        if joined.count <= 200 { return joined }
+        return String(joined.prefix(200)) + "…"
     }
 
     private func runOnce(args: [String]) async throws -> YTDLPResult {
@@ -132,15 +167,13 @@ actor YTDLPRunner {
         }.value
     }
 
-    /// Build base args: `yt-dlp` global flags (cookies, sleep) prepended, then user args.
+    /// Build base args: `yt-dlp` global flags (cookies only — sleep-requests
+    /// removed in v2.0.0) prepended, then user args.
     @MainActor
     static func baseArgs(settings: Settings) -> [String] {
         var args: [String] = []
         if let key = settings.browser.ytDlpKey {
             args.append(contentsOf: ["--cookies-from-browser", key])
-        }
-        if settings.sleepRequests > 0 {
-            args.append(contentsOf: ["--sleep-requests", String(settings.sleepRequests)])
         }
         return args
     }

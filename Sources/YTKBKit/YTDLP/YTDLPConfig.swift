@@ -5,7 +5,6 @@ import Foundation
 /// non-Sendable mutable state crosses actor boundaries.
 struct YTDLPConfig: Sendable {
     let browserKey: String?
-    let sleepRequests: Double
     let languagePriority: [String]
 
     var hasCookies: Bool { browserKey != nil }
@@ -14,9 +13,6 @@ struct YTDLPConfig: Sendable {
         var args: [String] = []
         if let key = browserKey {
             args.append(contentsOf: ["--cookies-from-browser", key])
-        }
-        if sleepRequests > 0 {
-            args.append(contentsOf: ["--sleep-requests", String(sleepRequests)])
         }
         return args
     }
@@ -44,7 +40,6 @@ extension Settings {
     var ytdlpConfig: YTDLPConfig {
         YTDLPConfig(
             browserKey: browser.ytDlpKey,
-            sleepRequests: sleepRequests,
             languagePriority: languagePriority
         )
     }

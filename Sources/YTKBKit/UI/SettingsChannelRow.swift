@@ -1,28 +1,17 @@
 import SwiftUI
 
 /// Channel row used inside Settings → Каналы. Wider than the popover row,
-/// surfaces the per-channel poll interval as a Picker (rather than a context
-/// menu), and exposes enable/disable + remove inline.
+/// exposes enable/disable + remove inline. v2.0.0: per-channel poll interval
+/// removed — single global interval applies to all channels.
 struct SettingsChannelRow: View {
     let channel: TrackedChannel
-    let globalLabel: String
     let progress: ChannelProgress?
     let isPollingThis: Bool
     let folderName: String?
-    let onSetInterval: (Int?) -> Void
     let onToggleEnabled: () -> Void
     let onPollOnly: () -> Void
     let onRemove: () -> Void
     let onOpenFolder: () -> Void
-
-    private static let intervalOptions: [(label: String, value: Int?)] = [
-        ("По умолчанию", nil),
-        ("Каждый час", 3600),
-        ("Каждые 3 часа", 10800),
-        ("Каждые 6 часов", 21600),
-        ("Раз в день", 86400),
-        ("Только вручную", 0)
-    ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -60,18 +49,6 @@ struct SettingsChannelRow: View {
 
                 Spacer()
 
-                Picker(selection: intervalBinding) {
-                    ForEach(Self.intervalOptions, id: \.value) { opt in
-                        Text(opt.value == nil ? "По умолчанию (\(globalLabel))" : opt.label)
-                            .tag(opt.value)
-                    }
-                } label: {
-                    Text("Частота")
-                }
-                .pickerStyle(.menu)
-                .frame(width: 220)
-                .disabled(!channel.enabled)
-
                 Menu {
                     Button("Проверить только этот канал", action: onPollOnly)
                         .disabled(isPollingThis || !channel.enabled)
@@ -103,10 +80,6 @@ struct SettingsChannelRow: View {
         .padding(.vertical, 8)
     }
 
-    private var intervalBinding: Binding<Int?> {
-        Binding(get: { channel.pollIntervalSeconds }, set: { onSetInterval($0) })
-    }
-
     @ViewBuilder
     private var folderRow: some View {
         if let folderName, !folderName.isEmpty {
@@ -133,8 +106,8 @@ struct SettingsChannelRow: View {
                 Text(phaseLabel(p))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                if p.total > 0 {
-                    Text("\(p.current)/\(p.total)")
+                if let label = progressCountLabel(p) {
+                    Text(label)
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
@@ -153,8 +126,8 @@ struct SettingsChannelRow: View {
             ProgressView(value: progressFraction(p))
                 .progressViewStyle(.linear)
                 .tint(progressTint(p))
-            if let reported = p.reportedChannelTotal, reported > 0, p.total > 0, reported > p.total + 5 {
-                Text("\(p.total) из \(reported) — остальное подтянется на следующих проверках.")
+            if let mismatch = channelTotalMismatch(p) {
+                Text(mismatch)
                     .font(.caption2)
                     .foregroundStyle(.orange)
                     .lineLimit(2)
@@ -171,11 +144,40 @@ struct SettingsChannelRow: View {
         }
     }
 
+    /// Just the percentage — X/Y дублируется в badge справа от названия.
+    private func progressCountLabel(_ p: ChannelProgress) -> String? {
+        guard p.total > 0 else { return nil }
+        let done = p.alreadyIndexed + p.current
+        if let reported = p.reportedChannelTotal, reported > 0 {
+            return "\(Int((Double(done) / Double(reported)) * 100))%"
+        }
+        let totalGuess = p.alreadyIndexed + p.total
+        if p.alreadyIndexed > 0 && totalGuess > 0 {
+            return "\(Int((Double(done) / Double(totalGuess)) * 100))%"
+        }
+        return "\(Int((Double(p.current) / Double(p.total)) * 100))%"
+    }
+
+    /// Channel-wide fraction whenever we know the reported total.
     private func progressFraction(_ p: ChannelProgress) -> Double? {
         switch p.phase {
         case .resolving, .scanning: return nil
-        case .processing, .retrying: return p.fraction
+        case .processing, .retrying:
+            if let reported = p.reportedChannelTotal, reported > 0 {
+                let done = p.alreadyIndexed + p.current
+                return min(1.0, Double(done) / Double(reported))
+            }
+            return p.fraction
         }
+    }
+
+    /// Surface the gap when we project we'll finish below YouTube's reported
+    /// total — explains "the rest will pull in on later cycles".
+    private func channelTotalMismatch(_ p: ChannelProgress) -> String? {
+        guard let reported = p.reportedChannelTotal, reported > 0 else { return nil }
+        let projectedDone = p.alreadyIndexed + p.total
+        guard p.total > 0 && reported > projectedDone + 5 else { return nil }
+        return "\(projectedDone) из \(reported) — остальное подтянется на следующих проверках."
     }
 
     private func progressTint(_ p: ChannelProgress) -> Color {
@@ -192,7 +194,15 @@ struct SettingsChannelRow: View {
         return "проверен \(Int(interval / 86400)) д назад"
     }
 
+    /// Live counts during polling (from ChannelProgress); persisted otherwise.
     private var videoCountLabel: String? {
+        if isPollingThis, let p = progress {
+            let done = p.alreadyIndexed + p.current
+            if let reported = p.reportedChannelTotal, reported > 0 {
+                return "\(done) / \(reported)"
+            }
+            if p.alreadyIndexed > 0 { return "\(done)" }
+        }
         let indexed = channel.indexedCount
         let total = channel.videoCount ?? 0
         if total > 0 && indexed > 0 && indexed < total {
