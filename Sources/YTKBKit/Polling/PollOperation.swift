@@ -70,7 +70,7 @@ actor PollOperation {
     private let languagePriority: [String]
     private let maxConcurrentVideos: Int
 
-    package init(runner: YTDLPRunner, config: YTDLPConfig, maxConcurrentVideos: Int = 5) {
+    package init(runner: YTDLPRunner, config: YTDLPConfig, maxConcurrentVideos: Int = 2) {
         self.runner = runner
         self.metadata = MetadataFetcher(runner: runner, config: config)
         self.subs = SubsDownloader(runner: runner, config: config)

@@ -14,6 +14,12 @@ package struct SubsPlan {
 }
 
 package enum SubsPlanner {
+    /// YouTube includes pseudo-tracks like "live_chat" (chat replay JSON) in
+    /// the subtitles dict. Those aren't transcripts and always fail the
+    /// "Requested format is not available" check after wasting 1-3 minutes
+    /// per attempt. Filter them out before planning.
+    private static let nonTranscriptKeys: Set<String> = ["live_chat", "rechat"]
+
     /// Pick a language key matching `desired` from the available track keys.
     /// Tries exact, then prefix (so "en" matches "en-US"). Returns nil if none.
     package static func pickLang(_ desired: String?, in tracks: [String: [SubFormat]]?) -> String? {
@@ -35,8 +41,8 @@ package enum SubsPlanner {
     /// Other strings are treated as raw BCP-47 language codes (e.g. "ru", "fr-FR").
     /// For each requested language, both auto-subs and manual-subs are tried (auto first).
     package static func buildPlan(meta: VideoMetadata, languagePriority: [String] = ["@original", "@english", "@any"]) -> SubsPlan {
-        let auto = meta.automaticCaptions ?? [:]
-        let manual = meta.subtitles ?? [:]
+        let auto = (meta.automaticCaptions ?? [:]).filter { !nonTranscriptKeys.contains($0.key) }
+        let manual = (meta.subtitles ?? [:]).filter { !nonTranscriptKeys.contains($0.key) }
         let orig = meta.language ?? meta.originalLanguage
 
         var attempts: [SubsPlan.Attempt] = []
