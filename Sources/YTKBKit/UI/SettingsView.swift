@@ -285,27 +285,6 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Section("Параллельность") {
-                Stepper(
-                    "Каналов параллельно: \(appState.settings.maxConcurrentChannels)",
-                    value: Binding(
-                        get: { appState.settings.maxConcurrentChannels },
-                        set: { appState.settings.setMaxConcurrentChannels($0) }
-                    ),
-                    in: 1...4
-                )
-                Stepper(
-                    "Видео в канале параллельно: \(appState.settings.maxConcurrentVideos)",
-                    value: Binding(
-                        get: { appState.settings.maxConcurrentVideos },
-                        set: { appState.settings.setMaxConcurrentVideos($0) }
-                    ),
-                    in: 1...8
-                )
-                Text("Больше — быстрее, но YouTube может временно ограничить доступ.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
             Section("Энергосбережение") {
                 Toggle("Не давать Mac засыпать во время индексации", isOn: Binding(
                     get: { appState.settings.preventSleepDuringPoll },

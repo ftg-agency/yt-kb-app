@@ -56,8 +56,6 @@ final class Settings: ObservableObject {
         static let backgroundPollingEnabled = "backgroundPollingEnabled"
         static let languagePriority = "languagePriority"  // [String], top-down
         static let preventSleepDuringPoll = "preventSleepDuringPoll"
-        static let maxConcurrentChannels = "maxConcurrentChannels"
-        static let maxConcurrentVideos = "maxConcurrentVideos"
         static let autoUpdateEnabled = "autoUpdateEnabled"
         static let kbConsolidationVersion = "kbConsolidationVersion"
         static let launchAtLogin = "launchAtLogin"
@@ -82,15 +80,6 @@ final class Settings: ObservableObject {
     /// Released when the cycle ends. NSBackgroundActivityScheduler still wakes
     /// the system periodically via Power Nap when on AC power.
     @Published var preventSleepDuringPoll: Bool = true
-    /// Max number of channels processed in parallel during a polling cycle.
-    /// Each channel is one yt-dlp pipeline. Higher values = faster on
-    /// multi-channel batches BUT increase chance of YouTube bot-detection
-    /// (more concurrent requests from same IP/cookies).
-    /// Range 1...4, default 2.
-    @Published var maxConcurrentChannels: Int = 2
-    /// Max number of videos processed in parallel within a single channel poll.
-    /// Each video is one metadata + subs yt-dlp pipeline. Range 1...8, default 5.
-    @Published var maxConcurrentVideos: Int = 5
     /// Auto-check GitHub Releases for newer versions every 6 hours.
     /// User can also trigger a manual check via Settings → О приложении.
     @Published var autoUpdateEnabled: Bool = true
@@ -126,10 +115,6 @@ final class Settings: ObservableObject {
             languagePriority = stored
         }
         preventSleepDuringPoll = defaults.object(forKey: Keys.preventSleepDuringPoll) as? Bool ?? true
-        let storedConc = defaults.object(forKey: Keys.maxConcurrentChannels) as? Int ?? 2
-        maxConcurrentChannels = max(1, min(4, storedConc))
-        let storedVidConc = defaults.object(forKey: Keys.maxConcurrentVideos) as? Int ?? 5
-        maxConcurrentVideos = max(1, min(8, storedVidConc))
         autoUpdateEnabled = defaults.object(forKey: Keys.autoUpdateEnabled) as? Bool ?? true
         kbConsolidationVersion = defaults.object(forKey: Keys.kbConsolidationVersion) as? Int ?? 0
         launchAtLogin = defaults.object(forKey: Keys.launchAtLogin) as? Bool ?? false
@@ -168,18 +153,6 @@ final class Settings: ObservableObject {
     func setPreventSleepDuringPoll(_ value: Bool) {
         preventSleepDuringPoll = value
         defaults.set(value, forKey: Keys.preventSleepDuringPoll)
-    }
-
-    func setMaxConcurrentChannels(_ value: Int) {
-        let clamped = max(1, min(4, value))
-        maxConcurrentChannels = clamped
-        defaults.set(clamped, forKey: Keys.maxConcurrentChannels)
-    }
-
-    func setMaxConcurrentVideos(_ value: Int) {
-        let clamped = max(1, min(8, value))
-        maxConcurrentVideos = clamped
-        defaults.set(clamped, forKey: Keys.maxConcurrentVideos)
     }
 
     func setPollInterval(_ value: PollInterval) {

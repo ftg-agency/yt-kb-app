@@ -145,8 +145,10 @@ actor PollingCoordinator {
         let started = kbRoot.startAccessingSecurityScopedResource()
         defer { if started { kbRoot.stopAccessingSecurityScopedResource() } }
 
-        let maxConcVideos = await MainActor.run { appState.settings.maxConcurrentVideos }
-        let op = PollOperation(runner: YTDLPRunner.shared, config: config, maxConcurrentVideos: maxConcVideos)
+        // Parallelism is hardcoded — see plan: один канал в работе (FIFO
+        // очередь), 5 видео параллельно внутри канала. Default from
+        // PollOperation init is 5.
+        let op = PollOperation(runner: YTDLPRunner.shared, config: config)
         var totalDownloaded = 0
         var botHit = false
 
@@ -156,7 +158,8 @@ actor PollingCoordinator {
         drain: while true {
             while !queue.isEmpty {
                 if cancellation.isCancelled { queue.removeAll(); break drain }
-                let maxConcurrent = await MainActor.run { appState.settings.maxConcurrentChannels }
+                // Hardcoded — один канал в работе, остальные в FIFO очереди.
+                let maxConcurrent = 1
                 let batchSize = min(maxConcurrent, queue.count)
                 let batch = Array(queue.prefix(batchSize))
                 queue.removeFirst(batchSize)
