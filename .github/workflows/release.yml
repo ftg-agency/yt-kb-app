@@ -13,6 +13,13 @@ on:
 permissions:
   contents: write
 
+# Opt-in to Node.js 24 for JavaScript actions. actions/checkout@v4 and
+# actions/upload-artifact@v4 still ship Node 20 (deprecated by GitHub for
+# Actions runners). This silences the deprecation warning until both
+# actions release a v5 on Node 24. Becomes default June 2026 anyway.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build:
     runs-on: macos-15
