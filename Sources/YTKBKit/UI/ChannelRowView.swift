@@ -90,23 +90,19 @@ struct ChannelRowView: View {
         }
     }
 
-    /// "85% (85/100)" counter shown during polling. Channel-wide whenever
-    /// possible. Falls back to cycle-local progress when channel total is
-    /// unknown (RSS path with empty alreadyIndexed).
+    /// Just the percentage during polling — X/Y дублируется в badge справа
+    /// от названия. Channel-wide whenever possible, falls back to cycle-local.
     private func progressCountLabel(_ p: ChannelProgress) -> String? {
         guard p.total > 0 else { return nil }
         let done = p.alreadyIndexed + p.current
         if let reported = p.reportedChannelTotal, reported > 0 {
-            let pct = Int((Double(done) / Double(reported)) * 100)
-            return "\(pct)% (\(done)/\(reported))"
+            return "\(Int((Double(done) / Double(reported)) * 100))%"
         }
         let totalGuess = p.alreadyIndexed + p.total
         if p.alreadyIndexed > 0 && totalGuess > 0 {
-            let pct = Int((Double(done) / Double(totalGuess)) * 100)
-            return "\(pct)% (\(done)/\(totalGuess))"
+            return "\(Int((Double(done) / Double(totalGuess)) * 100))%"
         }
-        let pct = Int((Double(p.current) / Double(p.total)) * 100)
-        return "\(pct)% (\(p.current)/\(p.total))"
+        return "\(Int((Double(p.current) / Double(p.total)) * 100))%"
     }
 
     /// When YouTube reports more videos than we could enumerate AND we have

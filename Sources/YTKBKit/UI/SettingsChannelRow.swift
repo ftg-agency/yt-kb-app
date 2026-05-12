@@ -144,21 +144,18 @@ struct SettingsChannelRow: View {
         }
     }
 
-    /// Channel-wide "85% (X/Y)" when we know the channel total, else cycle-local.
+    /// Just the percentage — X/Y дублируется в badge справа от названия.
     private func progressCountLabel(_ p: ChannelProgress) -> String? {
         guard p.total > 0 else { return nil }
         let done = p.alreadyIndexed + p.current
         if let reported = p.reportedChannelTotal, reported > 0 {
-            let pct = Int((Double(done) / Double(reported)) * 100)
-            return "\(pct)% (\(done)/\(reported))"
+            return "\(Int((Double(done) / Double(reported)) * 100))%"
         }
         let totalGuess = p.alreadyIndexed + p.total
         if p.alreadyIndexed > 0 && totalGuess > 0 {
-            let pct = Int((Double(done) / Double(totalGuess)) * 100)
-            return "\(pct)% (\(done)/\(totalGuess))"
+            return "\(Int((Double(done) / Double(totalGuess)) * 100))%"
         }
-        let pct = Int((Double(p.current) / Double(p.total)) * 100)
-        return "\(pct)% (\(p.current)/\(p.total))"
+        return "\(Int((Double(p.current) / Double(p.total)) * 100))%"
     }
 
     /// Channel-wide fraction whenever we know the reported total.
